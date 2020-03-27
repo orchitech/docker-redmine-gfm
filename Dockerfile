@@ -1,4 +1,4 @@
-ARG REDMINE_IMAGE=redmine:latest
+ARG REDMINE_IMAGE=redmine:4.1.0
 FROM ${REDMINE_IMAGE}
 
 RUN apt-get update && apt-get install -y \
