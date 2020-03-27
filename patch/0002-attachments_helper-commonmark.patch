@@ -1,0 +1,13 @@
+diff --git a/app/helpers/attachments_helper.rb b/app/helpers/attachments_helper.rb
+index d03997c4b..731d86839 100644
+--- a/app/helpers/attachments_helper.rb
++++ b/app/helpers/attachments_helper.rb
+@@ -88,7 +88,7 @@ module AttachmentsHelper
+ 
+   def render_file_content(attachment, content)
+     if attachment.is_markdown?
+-      render :partial => 'common/markup', :locals => {:markup_text_formatting => 'markdown', :markup_text => content}
++      render :partial => 'common/markup', :locals => {:markup_text_formatting => 'common_mark', :markup_text => content}
+     elsif attachment.is_textile?
+       render :partial => 'common/markup', :locals => {:markup_text_formatting => 'textile', :markup_text => content}
+     else

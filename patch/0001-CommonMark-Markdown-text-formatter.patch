@@ -1,0 +1,1777 @@
+From 0b16ceb36b3ff85583a8fde903e32f0c6eb4c2ca Mon Sep 17 00:00:00 2001
+From: Jens Kraemer <jk@jkraemer.net>
+Date: Fri, 25 Oct 2019 06:34:50 +0000
+Subject: [PATCH] CommonMark Markdown text formatter
+
+---
+ Gemfile                                            |   7 +
+ lib/redmine.rb                                     |   8 +
+ .../common_mark/external_links_filter.rb           |  50 +++
+ .../common_mark/fixup_auto_links_filter.rb         |  55 ++++
+ .../wiki_formatting/common_mark/formatter.rb       |  68 ++++
+ lib/redmine/wiki_formatting/common_mark/helper.rb  |  54 +++
+ .../wiki_formatting/common_mark/html_parser.rb     |  27 ++
+ .../wiki_formatting/common_mark/markdown_filter.rb |  60 ++++
+ .../common_mark/sanitization_filter.rb             |  87 +++++
+ .../common_mark/syntax_highlight_filter.rb         |  52 +++
+ public/help/en/wiki_syntax_common_mark.html        |  87 +++++
+ .../help/en/wiki_syntax_detailed_common_mark.html  | 361 +++++++++++++++++++++
+ public/help/wiki_syntax_detailed.css               |   3 +
+ .../common_mark/application_helper_test.rb         |  49 +++
+ .../common_mark/external_links_filter_test.rb      |  35 ++
+ .../common_mark/fixup_auto_links_filter_test.rb    |  38 +++
+ .../wiki_formatting/common_mark/formatter_test.rb  | 270 +++++++++++++++
+ .../common_mark/markdown_filter_test.rb            |  22 ++
+ .../common_mark/sanitization_filter_test.rb        | 193 +++++++++++
+ .../common_mark/syntax_highlight_filter_test.rb    |  61 ++++
+ 20 files changed, 1587 insertions(+)
+ create mode 100644 lib/redmine/wiki_formatting/common_mark/external_links_filter.rb
+ create mode 100644 lib/redmine/wiki_formatting/common_mark/fixup_auto_links_filter.rb
+ create mode 100644 lib/redmine/wiki_formatting/common_mark/formatter.rb
+ create mode 100644 lib/redmine/wiki_formatting/common_mark/helper.rb
+ create mode 100644 lib/redmine/wiki_formatting/common_mark/html_parser.rb
+ create mode 100644 lib/redmine/wiki_formatting/common_mark/markdown_filter.rb
+ create mode 100644 lib/redmine/wiki_formatting/common_mark/sanitization_filter.rb
+ create mode 100644 lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter.rb
+ create mode 100644 public/help/en/wiki_syntax_common_mark.html
+ create mode 100644 public/help/en/wiki_syntax_detailed_common_mark.html
+ create mode 100644 test/unit/lib/redmine/wiki_formatting/common_mark/application_helper_test.rb
+ create mode 100644 test/unit/lib/redmine/wiki_formatting/common_mark/external_links_filter_test.rb
+ create mode 100644 test/unit/lib/redmine/wiki_formatting/common_mark/fixup_auto_links_filter_test.rb
+ create mode 100644 test/unit/lib/redmine/wiki_formatting/common_mark/formatter_test.rb
+ create mode 100644 test/unit/lib/redmine/wiki_formatting/common_mark/markdown_filter_test.rb
+ create mode 100644 test/unit/lib/redmine/wiki_formatting/common_mark/sanitization_filter_test.rb
+ create mode 100644 test/unit/lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter_test.rb
+
+diff --git a/Gemfile b/Gemfile
+index 587bdb101..fd96b8987 100644
+--- a/Gemfile
++++ b/Gemfile
+@@ -39,6 +39,13 @@ group :markdown do
+   gem "redcarpet", "~> 3.5.0"
+ end
+ 
++# Optional CommonMark support, not for JRuby
++group :common_mark do
++  gem "html-pipeline", "~> 2.12"
++  gem "commonmarker", "~> 0.20"
++  gem "sanitize", "~> 5.1"
++end
++
+ # Include database gems for the adapters found in the database
+ # configuration file
+ require 'erb'
+diff --git a/lib/redmine.rb b/lib/redmine.rb
+index 31a62c0a8..19f57edc6 100644
+--- a/lib/redmine.rb
++++ b/lib/redmine.rb
+@@ -29,6 +29,11 @@ begin
+ rescue LoadError
+   # Redcarpet is not available
+ end
++begin
++  require 'commonmarker' unless Object.const_defined?(:CommonMarker)
++rescue LoadError
++  # CommonMarker is not available
++end
+ 
+ require 'redmine/acts/positioned'
+ 
+@@ -328,6 +333,9 @@ end
+ Redmine::WikiFormatting.map do |format|
+   format.register :textile
+   format.register :markdown if Object.const_defined?(:Redcarpet)
++  if Object.const_defined?(:CommonMarker)
++    format.register :common_mark, label: 'CommonMark Markdown (GitHub Flavored)'
++  end
+ end
+ 
+ ActionView::Template.register_template_handler :rsb, Redmine::Views::ApiTemplateHandler
+diff --git a/lib/redmine/wiki_formatting/common_mark/external_links_filter.rb b/lib/redmine/wiki_formatting/common_mark/external_links_filter.rb
+new file mode 100644
+index 000000000..4e575e3d4
+--- /dev/null
++++ b/lib/redmine/wiki_formatting/common_mark/external_links_filter.rb
+@@ -0,0 +1,50 @@
++# frozen_string_literal: true
++
++# Redmine - project management software
++# Copyright (C) 2006-2019  Jean-Philippe Lang
++#
++# This program is free software; you can redistribute it and/or
++# modify it under the terms of the GNU General Public License
++# as published by the Free Software Foundation; either version 2
++# of the License, or (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++
++require 'uri'
++
++module Redmine
++  module WikiFormatting
++    module CommonMark
++
++      # adds class="external" to external links, and class="email" to mailto
++      # links
++      class ExternalLinksFilter < HTML::Pipeline::Filter
++        def call
++          doc.search("a").each do |node|
++            url = node["href"]
++            next unless url
++            next if url.starts_with?("/") || url.starts_with?("#") || !url.include?(':')
++
++            scheme = URI.parse(url).scheme
++            next if scheme.blank?
++
++            klass = node["class"].presence
++            node["class"] = [
++              klass,
++              (scheme == "mailto" ? "email" : "external")
++            ].compact.join " "
++          end
++          doc
++        end
++      end
++
++    end
++  end
++end
+diff --git a/lib/redmine/wiki_formatting/common_mark/fixup_auto_links_filter.rb b/lib/redmine/wiki_formatting/common_mark/fixup_auto_links_filter.rb
+new file mode 100644
+index 000000000..fae8dc7a0
+--- /dev/null
++++ b/lib/redmine/wiki_formatting/common_mark/fixup_auto_links_filter.rb
+@@ -0,0 +1,55 @@
++# frozen_string_literal: true
++
++# Redmine - project management software
++# Copyright (C) 2006-2019  Jean-Philippe Lang
++#
++# This program is free software; you can redistribute it and/or
++# modify it under the terms of the GNU General Public License
++# as published by the Free Software Foundation; either version 2
++# of the License, or (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++
++
++module Redmine
++  module WikiFormatting
++    module CommonMark
++
++      # fixes:
++      # - autolinked email addresses that are actually references to users:
++      #   user:<a href="mailto:user@example.org">user@example.org</a>
++      #   @<a href="mailto:user@example.org">user@example.org</a>
++      # - autolinked hi res image names that look like email addresses:
++      #   <a href="mailto:printscreen@2x.png">printscreen@2x.png</a>
++      class FixupAutoLinksFilter < HTML::Pipeline::Filter
++        USER_LINK_PREFIX = /(@|user:)\z/.freeze
++        HIRES_IMAGE = /.+@\dx\.(bmp|gif|jpg|jpe|jpeg|png)\z/.freeze
++
++        def call
++          doc.search("a").each do |node|
++            unless url = node['href'] and url.starts_with?('mailto:')
++              next
++            end
++
++            if (p = node.previous and p.text? and
++                p.text =~ USER_LINK_PREFIX) or
++               (node.text =~ HIRES_IMAGE)
++
++              node.replace node.text
++            end
++          end
++          doc
++        end
++      end
++
++    end
++  end
++end
++
+diff --git a/lib/redmine/wiki_formatting/common_mark/formatter.rb b/lib/redmine/wiki_formatting/common_mark/formatter.rb
+new file mode 100644
+index 000000000..4960b187d
+--- /dev/null
++++ b/lib/redmine/wiki_formatting/common_mark/formatter.rb
+@@ -0,0 +1,68 @@
++# frozen_string_literal: true
++
++# Redmine - project management software
++# Copyright (C) 2006-2019  Jean-Philippe Lang
++#
++# This program is free software; you can redistribute it and/or
++# modify it under the terms of the GNU General Public License
++# as published by the Free Software Foundation; either version 2
++# of the License, or (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++
++require 'html/pipeline'
++
++module Redmine
++  module WikiFormatting
++    module CommonMark
++
++      # configuration of the rendering pipeline
++      PIPELINE_CONFIG = {
++        # https://github.com/gjtorikian/commonmarker#extensions
++        commonmarker_extensions: %i(
++          table
++          strikethrough
++          tagfilter
++          autolink
++        ).freeze,
++
++        # https://github.com/gjtorikian/commonmarker#parse-options
++        commonmarker_parse_options: %i(
++          FOOTNOTES
++          STRIKETHROUGH_DOUBLE_TILDE
++          UNSAFE
++          VALIDATE_UTF8
++        ).freeze,
++
++        # https://github.com/gjtorikian/commonmarker#render-options
++        commonmarker_render_options: %i(
++          UNSAFE
++        ).freeze,
++      }.freeze
++
++
++      MarkdownPipeline = HTML::Pipeline.new [
++        MarkdownFilter,
++        SanitizationFilter,
++        SyntaxHighlightFilter,
++        FixupAutoLinksFilter,
++        ExternalLinksFilter,
++      ], PIPELINE_CONFIG
++
++      class Formatter < Redmine::WikiFormatting::Markdown::Formatter
++        def to_html(*args)
++          result = MarkdownPipeline.call @text
++          result[:output].to_s
++        end
++      end
++
++    end
++  end
++end
+diff --git a/lib/redmine/wiki_formatting/common_mark/helper.rb b/lib/redmine/wiki_formatting/common_mark/helper.rb
+new file mode 100644
+index 000000000..70aa4bc2b
+--- /dev/null
++++ b/lib/redmine/wiki_formatting/common_mark/helper.rb
+@@ -0,0 +1,54 @@
++# frozen_string_literal: true
++
++# Redmine - project management software
++# Copyright (C) 2006-2019  Jean-Philippe Lang
++#
++# This program is free software; you can redistribute it and/or
++# modify it under the terms of the GNU General Public License
++# as published by the Free Software Foundation; either version 2
++# of the License, or (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++
++
++module Redmine
++  module WikiFormatting
++    module CommonMark
++      module Helper
++        include Redmine::WikiFormatting::Markdown::Helper
++
++        def wikitoolbar_for(field_id, preview_url = preview_text_path)
++          heads_for_wiki_formatter
++          help_file = "/help/#{current_language.to_s.downcase}/wiki_syntax_common_mark.html"
++          # fall back to the english help page if there is none for the current
++          # language
++          unless File.readable? Rails.root.join("public", help_file)
++            help_file = "/help/en/wiki_syntax_common_mark.html"
++          end
++          url = "#{Redmine::Utils.relative_url_root}#{help_file}"
++          javascript_tag("var wikiToolbar = new jsToolBar(document.getElementById('#{field_id}')); wikiToolbar.setHelpLink('#{escape_javascript url}'); wikiToolbar.setPreviewUrl('#{escape_javascript preview_url}'); wikiToolbar.draw();")
++        end
++
++        # removes the 'underline' icon from the markdown toolbar since there
++        # is no such thing in CommonMark
++        def heads_for_wiki_formatter
++          unless @common_mark_heads_for_wiki_formatter_included
++            super
++            content_for :header_tags do
++              javascript_tag(%[delete jsToolBar.prototype.elements.ins;])
++            end
++            @common_mark_heads_for_wiki_formatter_included = true
++          end
++        end
++      end
++    end
++  end
++end
++
+diff --git a/lib/redmine/wiki_formatting/common_mark/html_parser.rb b/lib/redmine/wiki_formatting/common_mark/html_parser.rb
+new file mode 100644
+index 000000000..4548ecc28
+--- /dev/null
++++ b/lib/redmine/wiki_formatting/common_mark/html_parser.rb
+@@ -0,0 +1,27 @@
++# frozen_string_literal: true
++
++# Redmine - project management software
++# Copyright (C) 2006-2019  Jean-Philippe Lang
++#
++# This program is free software; you can redistribute it and/or
++# modify it under the terms of the GNU General Public License
++# as published by the Free Software Foundation; either version 2
++# of the License, or (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++
++
++module Redmine
++  module WikiFormatting
++    module CommonMark
++      HtmlParser = Redmine::WikiFormatting::Markdown::HtmlParser
++    end
++  end
++end
+diff --git a/lib/redmine/wiki_formatting/common_mark/markdown_filter.rb b/lib/redmine/wiki_formatting/common_mark/markdown_filter.rb
+new file mode 100644
+index 000000000..6f6cdfb47
+--- /dev/null
++++ b/lib/redmine/wiki_formatting/common_mark/markdown_filter.rb
+@@ -0,0 +1,60 @@
++# frozen_string_literal: true
++
++# Redmine - project management software
++# Copyright (C) 2006-2019  Jean-Philippe Lang
++#
++# This program is free software; you can redistribute it and/or
++# modify it under the terms of the GNU General Public License
++# as published by the Free Software Foundation; either version 2
++# of the License, or (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++
++
++module Redmine
++  module WikiFormatting
++    module CommonMark
++
++      # Converts Markdown to HTML using CommonMarker
++      #
++      # We do not use the stock HTML::Pipeline::MarkdownFilter because this
++      # does not allow for straightforward configuration of render and parsing
++      # options
++      class MarkdownFilter < HTML::Pipeline::TextFilter
++        def initialize(text, context = nil, result = nil)
++          super text, context, result
++          @text = @text.delete "\r"
++        end
++
++        def call
++          doc = CommonMarker.render_doc(@text, parse_options, extensions)
++          html = doc.to_html render_options, extensions
++          html.rstrip!
++          html
++        end
++
++        private
++
++        def extensions
++          context.fetch :commonmarker_extensions, []
++        end
++
++        def parse_options
++          context.fetch :commonmarker_parse_options, :DEFAULT
++        end
++
++        def render_options
++          context.fetch :commonmarker_render_options, :DEFAULT
++        end
++      end
++
++    end
++  end
++end
+diff --git a/lib/redmine/wiki_formatting/common_mark/sanitization_filter.rb b/lib/redmine/wiki_formatting/common_mark/sanitization_filter.rb
+new file mode 100644
+index 000000000..98a049070
+--- /dev/null
++++ b/lib/redmine/wiki_formatting/common_mark/sanitization_filter.rb
+@@ -0,0 +1,87 @@
++# frozen_string_literal: true
++
++# Redmine - project management software
++# Copyright (C) 2006-2019  Jean-Philippe Lang
++#
++# This program is free software; you can redistribute it and/or
++# modify it under the terms of the GNU General Public License
++# as published by the Free Software Foundation; either version 2
++# of the License, or (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++
++
++module Redmine
++  module WikiFormatting
++    module CommonMark
++
++      # sanitizes rendered HTML using the Sanitize gem
++      class SanitizationFilter < HTML::Pipeline::SanitizationFilter
++        def whitelist
++          @@whitelist ||= customize_whitelist(super.deep_dup)
++        end
++
++        private
++
++        # customizes the whitelist defined in
++        # https://github.com/jch/html-pipeline/blob/master/lib/html/pipeline/sanitization_filter.rb
++        def customize_whitelist(whitelist)
++          # Disallow `name` attribute globally, allow on `a`
++          whitelist[:attributes][:all].delete("name")
++          whitelist[:attributes]["a"].push("name")
++
++          # allow class on code tags (this holds the language info from fenced
++          # code bocks and has the format language-foo)
++          whitelist[:attributes]["code"] = %w(class)
++          whitelist[:transformers].push lambda{|env|
++            node = env[:node]
++            return unless node.name == "code"
++            return unless node.has_attribute?("class")
++            unless node["class"] =~ /\Alanguage-(\w+)\z/
++              node.remove_attribute("class")
++            end
++          }
++
++          # Allow table cell alignment by style attribute
++          #
++          # Only necessary if we used the TABLE_PREFER_STYLE_ATTRIBUTES
++          # commonmarker option (which we do not, currently).
++          # By default, the align attribute is used (which is allowed on all
++          # elements).
++          # whitelist[:attributes]["th"] = %w(style)
++          # whitelist[:attributes]["td"] = %w(style)
++          # whitelist[:css] = { properties: ["text-align"] }
++
++          # Allow `id` in a and li elements for footnotes
++          # and remove any `id` properties not matching for footnotes
++          whitelist[:attributes]["a"].push "id"
++          whitelist[:attributes]["li"] = %w(id)
++          whitelist[:transformers].push lambda{|env|
++            node = env[:node]
++            return unless node.name == "a" || node.name == "li"
++            return unless node.has_attribute?("id")
++            return if node.name == "a" && node["id"] =~ /\Afnref\d+\z/
++            return if node.name == "li" && node["id"] =~ /\Afn\d+\z/
++            node.remove_attribute("id")
++          }
++
++          # allw the same set of URL schemes for links as is the default in
++          # Redmine::Helpers::URL#uri_with_safe_scheme?
++          whitelist[:protocols][:a] = [
++            'http', 'https', 'ftp', 'mailto', :relative
++          ]
++
++          whitelist
++        end
++      end
++
++    end
++  end
++end
+diff --git a/lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter.rb b/lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter.rb
+new file mode 100644
+index 000000000..3f46f466b
+--- /dev/null
++++ b/lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter.rb
+@@ -0,0 +1,52 @@
++# frozen_string_literal: true
++
++# Redmine - project management software
++# Copyright (C) 2006-2019  Jean-Philippe Lang
++#
++# This program is free software; you can redistribute it and/or
++# modify it under the terms of the GNU General Public License
++# as published by the Free Software Foundation; either version 2
++# of the License, or (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++
++
++module Redmine
++  module WikiFormatting
++    module CommonMark
++
++      # Redmine Syntax highlighting for <pre><code class="language-foo">
++      # blocks as generated by commonmarker
++      class SyntaxHighlightFilter < HTML::Pipeline::Filter
++        def call
++          doc.search("pre > code").each do |node|
++            next unless lang = node["class"].presence
++            next unless lang =~ /\Alanguage-(\w+)\z/
++
++            lang = $1
++            text = node.inner_text
++
++            if Redmine::SyntaxHighlighting.language_supported?(lang)
++              html = Redmine::SyntaxHighlighting.highlight_by_language(text, lang)
++              next if html.nil?
++              node.inner_html = html
++              node["class"] = "#{lang} syntaxhl"
++            else
++              # unsupported language, strip out the code tag
++              node.parent.inner_html = text
++            end
++          end
++          doc
++        end
++      end
++
++    end
++  end
++end
+diff --git a/public/help/en/wiki_syntax_common_mark.html b/public/help/en/wiki_syntax_common_mark.html
+new file mode 100644
+index 000000000..bda25b13b
+--- /dev/null
++++ b/public/help/en/wiki_syntax_common_mark.html
+@@ -0,0 +1,87 @@
++<html xmlns="http://www.w3.org/1999/xhtml">
++<head>
++<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
++<title>Wiki formatting</title>
++<link rel="stylesheet" type="text/css" href="../wiki_syntax.css" />
++</head>
++<body>
++
++<h1>Wiki Syntax Quick Reference (CommonMark Markdown (GitHub Flavored))</h1>
++
++<table style="width:100%">
++<tr><th colspan="3">Font Styles <span class="more_info">(<a href="wiki_syntax_detailed_common_mark.html#5" target="_blank">more</a>)</span></th></tr>
++<tr><th><img src="../../images/jstoolbar/bt_strong.png" style="border: 1px solid #bbb;" alt="Strong" /></th><td style="width:50%;">**Strong**</td><td style="width:50%;"><strong>Strong</strong></td></tr>
++<tr><th><img src="../../images/jstoolbar/bt_em.png" style="border: 1px solid #bbb;" alt="Italic" /></th><td>*Italic*</td><td><em>Italic</em></td></tr>
++<tr><th><img src="../../images/jstoolbar/bt_del.png" style="border: 1px solid #bbb;" alt="Deleted" /></th><td>~~Deleted~~</td><td><del>Deleted</del></td></tr>
++<tr><th><img src="../../images/jstoolbar/bt_code.png" style="border: 1px solid #bbb;" alt="Inline Code" /></th><td>`Inline Code`</td><td><code>Inline Code</code></td></tr>
++<tr><th><img src="../../images/jstoolbar/bt_pre.png" style="border: 1px solid #bbb;" alt="Preformatted text" /></th><td>```<br />&nbsp;lines<br />&nbsp;of code<br />```</td><td>
++<pre>
++ lines
++ of code
++</pre>
++</td></tr>
++
++<tr><th colspan="3">Highlighted code <span class="more_info">(<a href="wiki_syntax_detailed_common_mark.html#13" target="_blank">more</a>)</span></th></tr>
++<tr><th><img src="../../images/jstoolbar/bt_precode.png" style="border: 1px solid #bbb;" alt="Highlighted code" /></th><td>```ruby<br />3.times do<br />&nbsp;&nbsp;puts 'Hello'<br />end<br />```</td><td>
++<pre><code class="ruby syntaxhl"><span class="mi">3</span><span class="p">.</span><span class="nf">times</span> <span class="k">do</span>
++  <span class="nb">puts</span> <span class="s1">'Hello'</span>
++<span class="k">end</span>
++</code></pre>
++</td></tr>
++
++<tr><th colspan="3">Line breaks and Paragraphs</th></tr>
++<tr><th></th><td>An empty line<br><br>creates<br>a new paragraph.</td><td><p>An empty line</p><p>creates a new paragraph.</p></td></tr>
++<tr><th></th><td>End a line with a backslash\<br> or two spaces to insert a manual line break.</td><td><p>End a line with a backslash<br>or two spaces to insert a manual line break.</p></td></tr>
++
++<tr><th colspan="3">Lists</th></tr>
++<tr><th><img src="../../images/jstoolbar/bt_ul.png" style="border: 1px solid #bbb;" alt="Unordered list" /></th><td>* Item 1<br />&nbsp;&nbsp;* Sub<br />* Item 2</td><td><ul><li>Item 1<ul><li>Sub</li></ul></li><li>Item 2</li></ul></td></tr>
++<tr><th><img src="../../images/jstoolbar/bt_ol.png" style="border: 1px solid #bbb;" alt="Ordered list" /></th><td>1. Item 1<br />&nbsp;&nbsp;&nbsp;1. Sub<br />2. Item 2</td><td><ol><li>Item 1<ol><li>Sub</li></ol></li><li>Item 2</li></ol></td></tr>
++
++<tr><th colspan="3">Headings <span class="more_info">(<a href="wiki_syntax_detailed_common_mark.html#8" target="_blank">more</a>)</span></th></tr>
++<tr><th><img src="../../images/jstoolbar/bt_h1.png" style="border: 1px solid #bbb;" alt="Heading 1" /></th><td># Title 1</td><td><h1>Title 1</h1></td></tr>
++<tr><th><img src="../../images/jstoolbar/bt_h2.png" style="border: 1px solid #bbb;" alt="Heading 2" /></th><td>## Title 2</td><td><h2>Title 2</h2></td></tr>
++<tr><th><img src="../../images/jstoolbar/bt_h3.png" style="border: 1px solid #bbb;" alt="Heading 3" /></th><td>### Title 3</td><td><h3>Title 3</h3></td></tr>
++
++<tr><th colspan="3">Links <span class="more_info">(<a href="wiki_syntax_detailed_common_mark.html#4" target="_blank">more</a>)</span></th></tr>
++<tr><th></th><td>www.foo.bar</td><td><a href="#">www.foo.bar</a></td></tr>
++<tr><th></th><td>http://foo.bar</td><td><a href="#">http://foo.bar</a></td></tr>
++<tr><th></th><td>[Foo](http://foo.bar)</td><td><a href="#">Foo</a></td></tr>
++
++<tr><th colspan="3">Redmine links <span class="more_info">(<a href="wiki_syntax_detailed_common_mark.html#3" target="_blank">more</a>)</span></th></tr>
++<tr><th><img src="../../images/jstoolbar/bt_link.png" style="border: 1px solid #bbb;" alt="Link to a Wiki page" /></th><td>[[Wiki page]]</td><td><a href="#">Wiki page</a></td></tr>
++<tr><th></th><td>Issue #12</td><td>Issue <a href="#">#12</a></td></tr>
++<tr><th></th><td>##12</td><td><a href="#">Bug #12</a>: The issue subject</td></tr>
++<tr><th></th><td>Revision r43</td><td>Revision <a href="#">r43</a></td></tr>
++<tr><th></th><td>commit:f30e13e43</td><td><a href="#">f30e13e4</a></td></tr>
++<tr><th></th><td>source:some/file</td><td><a href="#">source:some/file</a></td></tr>
++
++<tr><th colspan="3">Inline images <span class="more_info">(<a href="wiki_syntax_detailed_common_mark.html#7" target="_blank">more</a>)</span></th></tr>
++<tr><th><img src="../../images/jstoolbar/bt_img.png" style="border: 1px solid #bbb;" alt="Image" /></th><td>![](<em>image_url</em>)</td><td></td></tr>
++<tr><th></th><td>![](<em>attached_image</em>)</td><td></td></tr>
++
++<tr><th colspan="3">Tables</th></tr>
++<tr>
++  <th></th>
++  <td>| A | B | C |<br />|---|---|---|<br />| A | B | C |<br />| D | E | F |</td>
++  <td>
++    <table class="sample">
++      <tbody>
++        <th>A</th><th>B</th><th>C</th>
++        <tr><td>A</td><td>B</td><td>C</td></tr>
++        <tr><td>D</td><td>E</td><td>F</td></tr>
++      </tbody>
++    </table>
++  </td>
++</tr>
++
++<tr><th colspan="3">Raw HTML <span class="more_info">(<a href="wiki_syntax_detailed_common_mark.html#15" target="_blank">more</a>)</span></th></tr>
++<tr>
++  <th></th><td>HTML is &lt;del&gt;not&lt;/del&gt; &lt;u&gt;allowed&lt;/u&gt;.</td><td>HTML is <del>not</del> <u>allowed</u>.<td>
++</tr>
++
++</table>
++
++<p><a href="wiki_syntax_detailed_common_mark.html" onclick="window.open('wiki_syntax_detailed_common_mark.html', '', ''); return false;">More Information</a></p>
++</body>
++</html>
++
+diff --git a/public/help/en/wiki_syntax_detailed_common_mark.html b/public/help/en/wiki_syntax_detailed_common_mark.html
+new file mode 100644
+index 000000000..64198fd17
+--- /dev/null
++++ b/public/help/en/wiki_syntax_detailed_common_mark.html
+@@ -0,0 +1,361 @@
++<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
++<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
++<head>
++<title>RedmineWikiFormatting (CommonMark Markdown (GitHub Flavored))</title>
++<meta http-equiv="content-type" content="text/html; charset=utf-8" />
++<link rel="stylesheet" type="text/css" href="../wiki_syntax_detailed.css" />
++</head>
++
++<body>
++<h1><a name="1" class="wiki-page"></a>Wiki formatting (CommonMark Markdown (GitHub Flavored))</h1>
++
++    <ul class='toc'>
++        <li><a href='#2'>Links</a></li>
++        <ul>
++            <li><a href='#3'>Redmine links</a></li>
++            <li><a href='#4'>External links</a></li>
++        </ul>
++        <li><a href='#5'>Text formatting</a></li>
++        <ul>
++            <li><a href='#6'>Font style</a></li>
++            <li><a href='#7'>Inline images</a></li>
++            <li><a href='#8'>Headings</a></li>
++            <li><a href='#10'>Blockquotes</a></li>
++            <li><a href='#11'>Table of content</a></li>
++            <li><a href='#14'>Horizontal Rule</a></li>
++        </ul>
++        <li><a href='#12'>Macros</a></li>
++        <li><a href='#13'>Code highlighting</a></li>
++        <li><a href='#15'>Raw HTML</a></li>
++    </ul>
++
++    <h2><a name="2" class="wiki-page"></a>Links</h2>
++
++        <h3><a name="3" class="wiki-page"></a>Redmine links</h3>
++
++        <p>Redmine allows hyperlinking between resources (issues, changesets, wiki pages...) from anywhere wiki formatting is used.</p>
++        <ul>
++            <li>Link to an issue: <strong>#124</strong> (displays <del><a href="#" class="issue" title="bulk edit doesn't change the category or fixed version properties (Closed)">#124</a></del>, link is striked-through if the issue is closed)</li>
++            <li>Link to an issue including tracker name and subject: <strong>##124</strong> (displays <a href="#" class="issue" title="bulk edit doesn't change the category or fixed version properties (New)">Bug #124</a>: bulk edit doesn't change the category or fixed version properties)</li>
++            <li>Link to an issue note: <strong>#124-6</strong>, or <strong>#124#note-6</strong></li>
++            <li>Link to an issue note within the same issue: <strong>#note-6</strong></li>
++        </ul>
++
++        <p>Wiki links:</p>
++
++        <ul>
++            <li><strong>[[Guide]]</strong> displays a link to the page named 'Guide': <a href="#" class="wiki-page">Guide</a></li>
++            <li><strong>[[Guide#further-reading]]</strong> takes you to the anchor "further-reading". Headings get automatically assigned anchors so that you can refer to them: <a href="#" class="wiki-page">Guide</a></li>
++            <li><strong>[[#further-reading]]</strong> link to the anchor "further-reading" of the current page: <a href="#" class="wiki-page">#further-reading</a></li>
++            <li><strong>[[Guide|User manual]]</strong> displays a link to the same page but with a different text: <a href="#" class="wiki-page">User manual</a></li>
++        </ul>
++
++        <p>You can also link to pages of an other project wiki:</p>
++
++        <ul>
++            <li><strong>[[sandbox:some page]]</strong> displays a link to the page named 'Some page' of the Sandbox wiki</li>
++            <li><strong>[[sandbox:]]</strong> displays a link to the Sandbox wiki main page</li>
++        </ul>
++
++        <p>Wiki links are displayed in red if the page doesn't exist yet, eg: <a href="#" class="wiki-page new">Nonexistent page</a>.</p>
++
++        <p>Links to other resources:</p>
++
++        <ul>
++            <li>Documents:
++                <ul>
++                    <li><strong>document#17</strong> (link to document with id 17)</li>
++                    <li><strong>document:Greetings</strong> (link to the document with title "Greetings")</li>
++                    <li><strong>document:"Some document"</strong> (double quotes can be used when document title contains spaces)</li>
++                    <li><strong>sandbox:document:"Some document"</strong> (link to a document with title "Some document" in other project "sandbox")</li>
++                </ul>
++            </li>
++        </ul>
++
++        <ul>
++            <li>Versions:
++                <ul>
++                    <li><strong>version#3</strong> (link to version with id 3)</li>
++                    <li><strong>version:1.0.0</strong> (link to version named "1.0.0")</li>
++                    <li><strong>version:"1.0 beta 2"</strong></li>
++                    <li><strong>sandbox:version:1.0.0</strong> (link to version "1.0.0" in the project "sandbox")</li>
++                </ul>
++            </li>
++        </ul>
++
++        <ul>
++            <li>Attachments:
++                <ul>
++                    <li><strong>attachment:file.zip</strong> (link to the attachment of the current object named file.zip)</li>
++                    <li>For now, attachments of the current object can be referenced only (if you're on an issue, it's possible to reference attachments of this issue only)</li>
++                </ul>
++            </li>
++        </ul>
++
++        <ul>
++            <li>Changesets:
++                <ul>
++                    <li><strong>r758</strong>                       (link to a changeset)</li>
++                    <li><strong>commit:c6f4d0fd</strong>            (link to a changeset with a non-numeric hash)</li>
++                    <li><strong>svn1|r758</strong>                  (link to a changeset of a specific repository, for projects with multiple repositories)</li>
++                    <li><strong>commit:hg|c6f4d0fd</strong>         (link to a changeset with a non-numeric hash of a specific repository)</li>
++                    <li><strong>sandbox:r758</strong>               (link to a changeset of another project)</li>
++                    <li><strong>sandbox:commit:c6f4d0fd</strong>    (link to a changeset with a non-numeric hash of another project)</li>
++                </ul>
++            </li>
++        </ul>
++
++        <ul>
++             <li>Repository files:
++                <ul>
++                    <li><strong>source:some/file</strong>           (link to the file located at /some/file in the project's repository)</li>
++                    <li><strong>source:some/file@52</strong>        (link to the file's revision 52)</li>
++                    <li><strong>source:some/file#L120</strong>      (link to line 120 of the file)</li>
++                    <li><strong>source:some/file@52#L120</strong>   (link to line 120 of the file's revision 52)</li>
++                    <li><strong>source:"some file@52#L120"</strong> (use double quotes when the URL contains spaces</li>
++                    <li><strong>export:some/file</strong>           (force the download of the file)</li>
++                    <li><strong>source:svn1|some/file</strong>      (link to a file of a specific repository, for projects with multiple repositories)</li>
++                    <li><strong>sandbox:source:some/file</strong>   (link to the file located at /some/file in the repository of the project "sandbox")</li>
++                    <li><strong>sandbox:export:some/file</strong>   (force the download of the file)</li>
++                </ul>
++            </li>
++        </ul>
++
++        <ul>
++            <li>Forums:
++                <ul>
++                    <li><strong>forum#1</strong> (link to forum with id 1</li>
++                    <li><strong>forum:Support</strong> (link to forum named Support)</li>
++                    <li><strong>forum:"Technical Support"</strong> (use double quotes if forum name contains spaces)</li>
++                </ul>
++            </li>
++        </ul>
++
++        <ul>
++            <li>Forum messages:
++                <ul>
++                    <li><strong>message#1218</strong> (link to message with id 1218)</li>
++                </ul>
++            </li>
++        </ul>
++
++        <ul>
++            <li>Projects:
++                <ul>
++                    <li><strong>project#3</strong> (link to project with id 3)</li>
++                    <li><strong>project:some-project</strong> (link to project with name or slug of "some-project")</li>
++                    <li><strong>project:"Some Project"</strong> (use double quotes for project name containing spaces)</li>
++                </ul>
++             </li>
++        </ul>
++
++        <ul>
++            <li>News:
++                <ul>
++                    <li><strong>news#2</strong> (link to news item with id 2)</li>
++                    <li><strong>news:Greetings</strong> (link to news item named "Greetings")</li>
++                    <li><strong>news:"First Release"</strong> (use double quotes if news item name contains spaces)</li>
++                </ul>
++            </li>
++        </ul>
++
++        <ul>
++            <li>Users:
++                <ul>
++                    <li><strong>user#2</strong> (link to user with id 2)</li>
++                    <li><strong>user:jsmith</strong> (Link to user with login jsmith)</li>
++                    <li><strong>@jsmith</strong> (Link to user with login jsmith)</li>
++                </ul>
++            </li>
++        </ul>
++
++        <p>Escaping:</p>
++
++        <ul>
++            <li>You can prevent Redmine links from being parsed by preceding them with an exclamation mark: !</li>
++        </ul>
++
++
++        <h3><a name="4" class="wiki-page"></a>External links</h3>
++
++        <p>URLs (starting with: www, http, https, ftp, ftps, sftp and sftps) and email addresses are automatically turned into clickable links:</p>
++
++<pre>
++http://www.redmine.org, someone@foo.bar
++</pre>
++
++        <p>displays: <a class="external" href="http://www.redmine.org">http://www.redmine.org</a>, <a href="mailto:someone@foo.bar" class="email">someone@foo.bar</a></p>
++
++        <p>If you want to display a specific text instead of the URL, you can use the standard markdown syntax:</p>
++
++<pre>
++[Redmine web site](http://www.redmine.org)
++</pre>
++
++        <p>displays: <a href="http://www.redmine.org" class="external">Redmine web site</a></p>
++
++
++    <h2><a name="5" class="wiki-page"></a>Text formatting</h2>
++
++<p>For things such as headlines, bold, tables, lists, Redmine supports Markdown syntax according to <a class="external" href="https://commonmark.org/">CommonMark</a> including some extensions commonly referred to as <em>GitHub flavored Markdown</em>. See the <a class="external" href="https://github.github.com/gfm">GitHub Flavored Markdown Spec</a> for information on using any of these features.  A few samples are included below, but the engine is capable of much more of that.</p>
++
++        <h3><a name="6" class="wiki-page"></a>Font style</h3>
++
++<pre>
++* **bold**
++* *Italic*
++* ***bold italic***
++* ~~strike-through~~
++</pre>
++
++        <p>Display:</p>
++
++        <ul>
++            <li><strong>bold</strong></li>
++            <li><em>italic</em></li>
++            <li><em><strong>bold italic</strong></em></li>
++            <li><del>strike-through</del></li>
++        </ul>
++
++        <h3><a name="7" class="wiki-page"></a>Inline images</h3>
++
++        <ul>
++            <li><strong>![](image_url)</strong> displays an image located at image_url (markdown syntax)</li>
++            <li>If you have an image attached to your wiki page, it can be displayed inline using its filename: <strong>![](attached_image)</strong></li>
++            <li>Images in your computer's clipboard can be pasted directly using Ctrl-v or Command-v.</li>
++            <li>Image files can be dragged onto the text area in order to be uploaded and embedded.</li>
++        </ul>
++
++        <h3><a name="8" class="wiki-page"></a>Headings</h3>
++
++<pre>
++# Heading
++## Subheading
++### Subsubheading
++</pre>
++
++        <p>Redmine assigns an anchor to each of those headings thus you can link to them with "#Heading", "#Subheading" and so forth.</p>
++
++
++        <h3><a name="10" class="wiki-page"></a>Blockquotes</h3>
++
++        <p>Start the paragraph with <strong>&gt;</strong></p>
++
++<pre>
++&gt; Rails is a full-stack framework for developing database-backed web applications according to the Model-View-Control pattern.
++To go live, all you need to add is a database and a web server.
++</pre>
++
++        <p>Display:</p>
++
++        <blockquote>
++                <p>Rails is a full-stack framework for developing database-backed web applications according to the Model-View-Control pattern.<br />To go live, all you need to add is a database and a web server.</p>
++        </blockquote>
++
++
++        <h3><a name="11" class="wiki-page"></a>Table of content</h3>
++
++<pre>
++{{toc}} =&gt; left aligned toc
++{{&gt;toc}} =&gt; right aligned toc
++</pre>
++
++        <h3><a name="14" class="wiki-page"></a>Horizontal Rule</h3>
++
++<pre>
++---
++</pre>
++
++    <h2><a name="12" class="wiki-page"></a>Macros</h2>
++
++    <p>Redmine has the following builtin macros:</p>
++
++    <p>
++    <dl>
++      <dt><code>hello_world</code></dt>
++      <dd><p>Sample macro.</p></dd>
++
++      <dt><code>macro_list</code></dt>
++      <dd><p>Displays a list of all available macros, including description if available.</p></dd>
++
++      <dt><code>child_pages</code></dt>
++      <dd><p>Displays a list of child pages. With no argument, it displays the child pages of the current wiki page. Examples:</p>
++      <pre><code>{{child_pages}} -- can be used from a wiki page only
++{{child_pages(depth=2)}} -- display 2 levels nesting only</code></pre></dd>
++
++      <dt><code>include</code></dt>
++      <dd><p>Include a wiki page. Example:</p>
++      <pre><code>{{include(Foo)}}</code></pre>
++      <p>or to include a page of a specific project wiki:</p>
++      <pre><code>{{include(projectname:Foo)}}</code></pre></dd>
++
++      <dt><code>collapse</code></dt>
++      <dd><p>Inserts of collapsed block of text. Example:</p>
++      <pre><code>{{collapse(View details...)
++This is a block of text that is collapsed by default.
++It can be expanded by clicking a link.
++}}</code></pre></dd>
++
++      <dt><code>thumbnail</code></dt>
++      <dd><p>Displays a clickable thumbnail of an attached image. Examples:</p>
++      <pre>{{thumbnail(image.png)}}
++{{thumbnail(image.png, size=300, title=Thumbnail)}}</pre></dd>
++
++      <dt><code>issue</code></dt>
++      <dd><p>Inserts a link to an issue with flexible text. Examples:</p>
++      <pre>{{issue(123)}}                              -- Issue #123: Enhance macro capabilities
++{{issue(123, project=true)}}                -- Andromeda - Issue #123:Enhance macro capabilities
++{{issue(123, tracker=false)}}               -- #123: Enhance macro capabilities
++{{issue(123, subject=false, project=true)}} -- Andromeda - Issue #123</pre></dd>
++    </dl>
++    </p>
++
++    <h2><a name="13" class="wiki-page"></a>Code highlighting</h2>
++
++    <p>Default code highlighting relies on <a href="http://rouge.jneen.net/" class="external">Rouge</a>, a syntax highlighting library written in pure Ruby. It supports many commonly used languages such as <strong>c</strong>, <strong>cpp</strong> (c++), <strong>csharp</strong> (c#, cs), <strong>css</strong>, <strong>diff</strong> (patch, udiff), <strong>go</strong> (golang), <strong>groovy</strong>, <strong>html</strong>, <strong>java</strong>, <strong>javascript</strong> (js), <strong>kotlin</strong>, <strong>objective_c</strong> (objc), <strong>perl</strong> (pl), <strong>php</strong>, <strong>python</strong> (py), <strong>r</strong>, <strong>ruby</strong> (rb), <strong>sass</strong>, <strong>scala</strong>, <strong>shell</strong> (bash, zsh, ksh, sh), <strong>sql</strong>, <strong>swift</strong>, <strong>xml</strong> and <strong>yaml</strong> (yml) languages, where the names inside parentheses are aliases. Please refer to <a href="https://www.redmine.org/projects/redmine/wiki/RedmineCodeHighlightingLanguages" class="external">https://www.redmine.org/projects/redmine/wiki/RedmineCodeHighlightingLanguages</a> for the full list of supported languages.</p>
++
++    <p>You can highlight code at any place that supports wiki formatting using this syntax (note that the language name or alias is case-insensitive):</p>
++
++<pre>
++```ruby
++  Place your code here.
++```
++</pre>
++
++    <p>Example:</p>
++
++<pre><code class="ruby syntaxhl"><span class="c1"># The Greeter class</span>
++<span class="k">class</span> <span class="nc">Greeter</span>
++  <span class="k">def</span> <span class="nf">initialize</span><span class="p">(</span><span class="nb">name</span><span class="p">)</span>
++    <span class="vi">@name</span> <span class="o">=</span> <span class="nb">name</span><span class="p">.</span><span class="nf">capitalize</span>
++  <span class="k">end</span>
++
++  <span class="k">def</span> <span class="nf">salute</span>
++    <span class="nb">puts</span> <span class="s2">"Hello </span><span class="si">#{</span><span class="vi">@name</span><span class="si">}</span><span class="s2">!"</span>
++  <span class="k">end</span>
++<span class="k">end</span>
++</code></pre>
++
++    <h2><a name="15" class="wiki-page"></a>Raw HTML</h2>
++
++    <p>You may use raw HTML for more complex formatting tasks, i.e. complex tables with cells spanning multiple rows or columns:</p>
++
++  <pre><code>
++    &lt;table width="50%"&gt;
++      &lt;tr&gt;&lt;td rowspan="2"&gt;Two rows&lt;/td&gt;&lt;td&gt;foo&lt;/td&gt;&lt;/tr&gt;
++      &lt;tr&gt;&lt;td&gt;bar&lt;/td&gt;&lt;/tr&gt;
++      &lt;tr&gt;&lt;td align="center" colspan="2"&gt;bar&lt;/td&gt;&lt;/tr&gt;
++    &lt;/table&gt;
++  </code></pre>
++
++  <p>yields</p>
++
++<table width="50%" class="sample">
++<tr><td rowspan="2">Two rows</td><td>foo</td></tr>
++<tr><td>bar</td></tr>
++<tr><td align="center" colspan="2">bar</td></tr>
++</table>
++
++</body>
++</html>
++
+diff --git a/public/help/wiki_syntax_detailed.css b/public/help/wiki_syntax_detailed.css
+index ab37aff7b..4e99410fe 100644
+--- a/public/help/wiki_syntax_detailed.css
++++ b/public/help/wiki_syntax_detailed.css
+@@ -15,6 +15,9 @@ a, a:link, a:visited{ color: #169; text-decoration: none; }
+ a:hover, a:active{ color: #c61a1a; text-decoration: underline;}
+ a.new { color: #b73535; }
+ 
++table.sample { border-collapse: collapse; border-spacing: 0; margin: 4px; margin-left: 30px;}
++table.sample th, table.sample td { border: solid 1px #bbb; padding: 4px; height: 1em; }
++
+ .syntaxhl .c1 { color: #888888 }
+ .syntaxhl .k { color: #008800; font-weight: bold }
+ .syntaxhl .nc { color: #BB0066; font-weight: bold }
+diff --git a/test/unit/lib/redmine/wiki_formatting/common_mark/application_helper_test.rb b/test/unit/lib/redmine/wiki_formatting/common_mark/application_helper_test.rb
+new file mode 100644
+index 000000000..381c12e29
+--- /dev/null
++++ b/test/unit/lib/redmine/wiki_formatting/common_mark/application_helper_test.rb
+@@ -0,0 +1,49 @@
++# frozen_string_literal: true
++
++require File.expand_path('../../../../../../test_helper', __FILE__)
++
++class Redmine::WikiFormatting::CommonMark::ApplicationHelperTest < Redmine::HelperTest
++  if Object.const_defined?(:CommonMarker)
++
++  include ERB::Util
++  include Rails.application.routes.url_helpers
++
++  fixtures :projects, :enabled_modules,
++           :users, :email_addresses,
++           :members, :member_roles, :roles,
++           :repositories, :changesets,
++           :projects_trackers,
++           :trackers, :issue_statuses, :issues, :versions, :documents, :journals,
++           :wikis, :wiki_pages, :wiki_contents,
++           :boards, :messages, :news,
++           :attachments, :enumerations,
++           :custom_values, :custom_fields, :custom_fields_projects
++
++  def setup
++    super
++    set_tmp_attachments_directory
++  end
++
++  def test_attached_images_with_markdown_and_non_ascii_filename
++    to_test = {
++      'CAFÉ.JPG' => 'CAF%C3%89.JPG',
++      'crème.jpg' => 'cr%C3%A8me.jpg',
++    }
++    with_settings :text_formatting => 'common_mark' do
++      to_test.each do |filename, result|
++        attachment = Attachment.generate!(:filename => filename)
++        assert_include %(<img src="/attachments/download/#{attachment.id}/#{result}" alt="">), textilizable("![](#{filename})", :attachments => [attachment])
++      end
++    end
++  end
++
++  def test_toc_with_markdown_formatting_should_be_parsed
++    with_settings :text_formatting => 'common_mark' do
++      assert_select_in textilizable("{{toc}}\n\n# Heading"), 'ul.toc li', :text => 'Heading'
++      assert_select_in textilizable("{{<toc}}\n\n# Heading"), 'ul.toc.left li', :text => 'Heading'
++      assert_select_in textilizable("{{>toc}}\n\n# Heading"), 'ul.toc.right li', :text => 'Heading'
++    end
++  end
++
++end
++end
+diff --git a/test/unit/lib/redmine/wiki_formatting/common_mark/external_links_filter_test.rb b/test/unit/lib/redmine/wiki_formatting/common_mark/external_links_filter_test.rb
+new file mode 100644
+index 000000000..4c754b33f
+--- /dev/null
++++ b/test/unit/lib/redmine/wiki_formatting/common_mark/external_links_filter_test.rb
+@@ -0,0 +1,35 @@
++# frozen_string_literal: true
++#
++require File.expand_path('../../../../../../test_helper', __FILE__)
++if Object.const_defined?(:CommonMarker)
++require 'redmine/wiki_formatting/common_mark/external_links_filter'
++
++class Redmine::WikiFormatting::CommonMark::ExternalLinksFilterTest < ActiveSupport::TestCase
++
++  def filter(html)
++    Redmine::WikiFormatting::CommonMark::ExternalLinksFilter.to_html(html, @options)
++  end
++
++  def setup
++    @options = { }
++  end
++
++  def test_external_links_should_have_external_css_class
++    assert_equal %(<a href="http://example.net/" class="external">link</a>), filter(%(<a href="http://example.net/">link</a>))
++  end
++
++  def test_locals_links_should_not_have_external_css_class
++    assert_equal %(<a href="/">home</a>), filter(%(<a href="/">home</a>))
++    assert_equal %(<a href="relative">relative</a>), filter(%(<a href="relative">relative</a>))
++    assert_equal %(<a href="#anchor">anchor</a>), filter(%(<a href="#anchor">anchor</a>))
++  end
++
++  def test_mailto_links_should_have_email_class
++    assert_equal %(<a href="mailto:user@example.org" class="email">user</a>), filter(%(<a href="mailto:user@example.org">user</a>))
++  end
++
++
++end
++end # if Object.const_defined?(:CommonMarker)
++
++
+diff --git a/test/unit/lib/redmine/wiki_formatting/common_mark/fixup_auto_links_filter_test.rb b/test/unit/lib/redmine/wiki_formatting/common_mark/fixup_auto_links_filter_test.rb
+new file mode 100644
+index 000000000..def5c6c31
+--- /dev/null
++++ b/test/unit/lib/redmine/wiki_formatting/common_mark/fixup_auto_links_filter_test.rb
+@@ -0,0 +1,38 @@
++# frozen_string_literal: true
++#
++require File.expand_path('../../../../../../test_helper', __FILE__)
++
++if Object.const_defined?(:CommonMarker)
++require 'redmine/wiki_formatting/common_mark/fixup_auto_links_filter'
++
++class Redmine::WikiFormatting::CommonMark::FixupAutoLinksFilterTest < ActiveSupport::TestCase
++
++  def filter(html)
++    Redmine::WikiFormatting::CommonMark::FixupAutoLinksFilter.to_html(html, @options)
++  end
++
++  def format(markdown)
++    Redmine::WikiFormatting::CommonMark::MarkdownFilter.to_html(markdown, Redmine::WikiFormatting::CommonMark::PIPELINE_CONFIG)
++  end
++
++  def setup
++    @options = { }
++  end
++
++  def test_should_fixup_autolinked_user_references
++    text = "user:user@example.org"
++    assert_equal "<p>#{text}</p>", filter(format(text))
++    text = "@user@example.org"
++    assert_equal "<p>#{text}</p>", filter(format(text))
++  end
++
++  def test_should_fixup_autolinked_hires_files
++    text = "printscreen@2x.png"
++    assert_equal "<p>#{text}</p>", filter(format(text))
++  end
++
++end
++end # if Object.const_defined?(:CommonMarker)
++
++
++
+diff --git a/test/unit/lib/redmine/wiki_formatting/common_mark/formatter_test.rb b/test/unit/lib/redmine/wiki_formatting/common_mark/formatter_test.rb
+new file mode 100644
+index 000000000..948981e70
+--- /dev/null
++++ b/test/unit/lib/redmine/wiki_formatting/common_mark/formatter_test.rb
+@@ -0,0 +1,270 @@
++# frozen_string_literal: true
++
++# Redmine - project management software
++# Copyright (C) 2006-2019  Jean-Philippe Lang
++#
++# This program is free software; you can redistribute it and/or
++# modify it under the terms of the GNU General Public License
++# as published by the Free Software Foundation; either version 2
++# of the License, or (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++
++require File.expand_path('../../../../../../test_helper', __FILE__)
++
++class Redmine::WikiFormatting::CommonMark::FormatterTest < ActionView::TestCase
++  if Object.const_defined?(:CommonMarker)
++
++  def setup
++    @formatter = Redmine::WikiFormatting::CommonMark::Formatter
++  end
++
++  def format(text)
++    @formatter.new(text).to_html
++  end
++
++  def test_should_render_hard_breaks
++    html ="<p>foo<br>\nbar</p>"
++    assert_equal html, format("foo\\\nbar")
++    assert_equal html, format("foo  \nbar")
++  end
++
++  def test_should_ignore_soft_breaks
++    assert_equal "<p>foo\nbar</p>", format("foo\nbar")
++  end
++
++  def test_syntax_error_in_image_reference_should_not_raise_exception
++    assert format("!>[](foo.png)")
++  end
++
++  def test_empty_image_should_not_raise_exception
++    assert format("![]()")
++  end
++
++  def test_inline_style
++    assert_equal "<p><strong>foo</strong></p>", format("**foo**")
++  end
++
++  def test_not_set_intra_emphasis
++    assert_equal "<p>foo_bar_baz</p>", format("foo_bar_baz")
++  end
++
++  def test_wiki_links_should_be_preserved
++    text = 'This is a wiki link: [[Foo]]'
++    assert_include '[[Foo]]', format(text)
++  end
++
++  def test_redmine_links_with_double_quotes_should_be_preserved
++    text = 'This is a redmine link: version:"1.0"'
++    assert_include 'version:"1.0"', format(text)
++  end
++
++  def test_links_by_id_should_be_preserved
++    text = "[project#3]"
++    assert_equal "<p>#{text}</p>", format(text)
++  end
++
++  def test_links_to_users_should_be_preserved
++    text = "[@login]"
++    assert_equal "<p>#{text}</p>", format(text)
++    text = "[user:login]"
++    assert_equal "<p>#{text}</p>", format(text)
++    text = "user:user@example.org"
++    assert_equal "<p>#{text}</p>", format(text)
++    text = "[user:user@example.org]"
++    assert_equal "<p>#{text}</p>", format(text)
++    text = "@user@example.org"
++    assert_equal "<p>#{text}</p>", format(text)
++    text = "[@user@example.org]"
++    assert_equal "<p>#{text}</p>", format(text)
++  end
++
++  def test_files_with_at_should_not_end_up_as_mailto_links
++    text = "printscreen@2x.png"
++    assert_equal "<p>#{text}</p>", format(text)
++    text = "[printscreen@2x.png]"
++    assert_equal "<p>#{text}</p>", format(text)
++  end
++
++  def test_should_support_syntax_highlight
++    text = <<-STR
++~~~ruby
++def foo
++end
++~~~
++STR
++    assert_select_in format(text), 'pre code.ruby.syntaxhl' do
++      assert_select 'span.k', :text => 'def'
++    end
++  end
++
++  def test_should_not_allow_invalid_language_for_code_blocks
++    text = <<-STR
++~~~foo
++test
++~~~
++STR
++    assert_equal "<pre>test\n</pre>", format(text)
++  end
++
++  def test_external_links_should_have_external_css_class
++    text = 'This is a [link](http://example.net/)'
++    assert_equal '<p>This is a <a href="http://example.net/" class="external">link</a></p>', format(text)
++  end
++
++  def test_locals_links_should_not_have_external_css_class
++    text = 'This is a [link](/issues)'
++    assert_equal '<p>This is a <a href="/issues">link</a></p>', format(text)
++  end
++
++  def test_markdown_should_not_require_surrounded_empty_line
++    text = <<-STR
++This is a list:
++* One
++* Two
++STR
++    assert_equal "<p>This is a list:</p>\n<ul>\n<li>One</li>\n<li>Two</li>\n</ul>", format(text)
++  end
++
++  def test_footnotes
++    text = <<-STR
++This is some text[^1].
++
++[^1]: This is the foot note
++STR
++
++    expected = <<-EXPECTED
++<p>This is some text<sup><a href="#fn1" id="fnref1">1</a></sup>.</p>
++ <ol>
++<li id="fn1">
++<p>This is the foot note <a href="#fnref1">↩</a></p>
++</li>
++</ol> 
++EXPECTED
++
++    assert_equal expected.gsub(%r{[\r\n\t]}, ''), format(text).gsub(%r{[\r\n\t]}, '')
++  end
++
++  STR_WITH_PRE = [
++    # 0
++    <<~STR.chomp,
++      # Title
++
++      Lorem ipsum dolor sit amet, consectetuer adipiscing elit. Maecenas sed libero.
++    STR
++    # 1
++    <<~STR.chomp,
++      ## Heading 2
++
++      ~~~ruby
++        def foo
++        end
++      ~~~
++
++      Morbi facilisis accumsan orci non pharetra.
++
++      ~~~ ruby
++      def foo
++      end
++      ~~~
++
++      ```
++      Pre Content:
++
++      ## Inside pre
++
++      <tag> inside pre block
++
++      Morbi facilisis accumsan orci non pharetra.
++      ```
++    STR
++    # 2
++    <<~STR.chomp,
++      ### Heading 3
++
++      Nulla nunc nisi, egestas in ornare vel, posuere ac libero.
++    STR
++  ]
++
++  def test_get_section_should_ignore_pre_content
++    text = STR_WITH_PRE.join("\n\n")
++
++    assert_section_with_hash STR_WITH_PRE[1..2].join("\n\n"), text, 2
++    assert_section_with_hash STR_WITH_PRE[2], text, 3
++  end
++
++  def test_update_section_should_not_escape_pre_content_outside_section
++    text = STR_WITH_PRE.join("\n\n")
++    replacement = "New text"
++
++    assert_equal [STR_WITH_PRE[0..1], "New text"].flatten.join("\n\n"),
++      @formatter.new(text).update_section(3, replacement)
++  end
++
++  def test_should_emphasize_text
++    text = 'This _text_ should be emphasized'
++    assert_equal '<p>This <em>text</em> should be emphasized</p>', format(text)
++  end
++
++  def test_should_strike_through_text
++    text = 'This ~~text~~ should be striked through'
++    assert_equal '<p>This <del>text</del> should be striked through</p>', format(text)
++  end
++
++  def test_should_autolink_urls_and_emails
++    [
++      [ "http://example.org", '<p><a href="http://example.org" class="external">http://example.org</a></p>' ],
++      [ "http://www.redmine.org/projects/redmine/issues?utf8=✓", '<p><a href="http://www.redmine.org/projects/redmine/issues?utf8=%E2%9C%93" class="external">http://www.redmine.org/projects/redmine/issues?utf8=✓</a></p>' ],
++      [ '[Letters](https://yandex.ru/search/?text=кол-во)', '<p><a href="https://yandex.ru/search/?text=%D0%BA%D0%BE%D0%BB-%D0%B2%D0%BE" class="external">Letters</a></p>' ],
++      [ "www.example.org", '<p><a href="http://www.example.org" class="external">www.example.org</a></p>' ],
++      [ "user@example.org", '<p><a href="mailto:user@example.org" class="email">user@example.org</a></p>']
++    ].each do |text, html|
++      assert_equal html, format(text)
++    end
++  end
++
++  def test_should_support_html_tables
++    text = '<table style="background: red"><tr><td>Cell</td></tr></table>'
++    assert_equal '<table><tr><td>Cell</td></tr></table>', format(text)
++  end
++
++  def test_should_remove_unsafe_uris
++    [
++      ['<img src="data:foobar">', '<img>'],
++      ['<a href="javascript:bla">click me</a>', '<p><a>click me</a></p>'],
++    ].each do |text, html|
++      assert_equal html, format(text)
++    end
++  end
++
++  def test_should_escape_unwanted_tags
++    [
++      [
++        %[<p>sit<br>amet &lt;style&gt;.foo { color: #fff; }&lt;/style&gt; &lt;script&gt;alert("hello world");&lt;/script&gt;</p>],
++         %[sit<br/>amet <style>.foo { color: #fff; }</style> <script>alert("hello world");</script>]
++      ]
++    ].each do |expected, input|
++      assert_equal expected, format(input)
++    end
++  end
++
++  private
++
++  def assert_section_with_hash(expected, text, index)
++    result = @formatter.new(text).get_section(index)
++
++    assert_kind_of Array, result
++    assert_equal 2, result.size
++    assert_equal expected, result.first, "section content did not match"
++    assert_equal Digest::MD5.hexdigest(expected), result.last, "section hash did not match"
++  end
++  end
++end
++
+diff --git a/test/unit/lib/redmine/wiki_formatting/common_mark/markdown_filter_test.rb b/test/unit/lib/redmine/wiki_formatting/common_mark/markdown_filter_test.rb
+new file mode 100644
+index 000000000..586778360
+--- /dev/null
++++ b/test/unit/lib/redmine/wiki_formatting/common_mark/markdown_filter_test.rb
+@@ -0,0 +1,22 @@
++# frozen_string_literal: true
++#
++require File.expand_path('../../../../../../test_helper', __FILE__)
++if Object.const_defined?(:CommonMarker)
++require 'redmine/wiki_formatting/common_mark/markdown_filter'
++
++class Redmine::WikiFormatting::CommonMark::MarkdownFilterTest < ActiveSupport::TestCase
++
++  def filter(markdown)
++    Redmine::WikiFormatting::CommonMark::MarkdownFilter.to_html(markdown)
++  end
++
++  # just a basic sanity test. more formatting tests in the formatter_test
++  def test_should_render_markdown
++    assert_equal "<p><strong>bold</strong></p>", filter("**bold**")
++  end
++
++
++end
++end # if Object.const_defined?(:CommonMarker)
++
++
+diff --git a/test/unit/lib/redmine/wiki_formatting/common_mark/sanitization_filter_test.rb b/test/unit/lib/redmine/wiki_formatting/common_mark/sanitization_filter_test.rb
+new file mode 100644
+index 000000000..d2471eb72
+--- /dev/null
++++ b/test/unit/lib/redmine/wiki_formatting/common_mark/sanitization_filter_test.rb
+@@ -0,0 +1,193 @@
++# frozen_string_literal: true
++#
++require File.expand_path('../../../../../../test_helper', __FILE__)
++if Object.const_defined?(:CommonMarker)
++require 'redmine/wiki_formatting/common_mark/sanitization_filter'
++
++class Redmine::WikiFormatting::CommonMark::SanitizationFilterTest < ActiveSupport::TestCase
++
++  def filter(html)
++    Redmine::WikiFormatting::CommonMark::SanitizationFilter.to_html(html, @options)
++  end
++
++  def setup
++    @options = { }
++  end
++
++  def test_should_filter_tags
++    input = %(<textarea>foo</textarea> <blink>dont blink</blink>)
++    assert_equal %(foo dont blink), filter(input)
++  end
++
++  def test_should_sanitize_attributes
++    input = %(<a href="foo" onclick="bar" baz="foo">link</a>)
++    assert_equal %(<a href="foo">link</a>), filter(input)
++  end
++
++  def test_should_allow_relative_links
++    input = %(<a href="foo/bar">foo/bar</a>)
++    assert_equal input, filter(input)
++  end
++
++  def test_should_support_footnotes
++    input = %(<a href="#fn1" id="fnref1">foo</a>)
++    assert_equal input, filter(input)
++    input = %(<ol><li id="fn1">footnote</li></ol>)
++    assert_equal input, filter(input)
++  end
++
++  def test_should_remove_invalid_ids
++    input = %(<a href="#fn1" id="foo">foo</a>)
++    assert_equal %(<a href="#fn1">foo</a>), filter(input)
++    input = %(<ol><li id="foo">footnote</li></ol>)
++    assert_equal %(<ol><li>footnote</li></ol>), filter(input)
++  end
++
++  def test_should_allow_class_on_code_only
++    input = %(<p class="foo">bar</p>)
++    assert_equal %(<p>bar</p>), filter(input)
++
++    input = %(<code class="language-ruby">foo</code>)
++    assert_equal input, filter(input)
++
++    input = %(<code class="foo">foo</code>)
++    assert_equal %(<code>foo</code>), filter(input)
++  end
++
++
++  # samples taken from the Sanitize test suite
++  STRINGS = [
++    [
++      '<b>Lo<!-- comment -->rem</b> <a href="pants" title="foo" style="text-decoration: underline;">ipsum</a> <a href="http://foo.com/"><strong>dolor</strong></a> sit<br/>amet <style>.foo { color: #fff; }</style> <script>alert("hello world");</script>',
++      '<b>Lorem</b> <a href="pants" title="foo">ipsum</a> <a href="http://foo.com/"><strong>dolor</strong></a> sit<br>amet .foo { color: #fff; } '
++    ],
++    [
++      'Lo<!-- comment -->rem</b> <a href=pants title="foo>ipsum <a href="http://foo.com/"><strong>dolor</a></strong> sit<br/>amet <script>alert("hello world");',
++      'Lorem <a href="pants" title="foo&gt;ipsum &lt;a href="><strong>dolor</strong></a> sit<br>amet '
++    ],
++    [
++      '<p>a</p><blockquote>b',
++      '<p>a</p><blockquote>b</blockquote>'
++    ],
++    [
++      '<b>Lo<!-- comment -->rem</b> <a href="javascript:pants" title="foo">ipsum</a> <a href="http://foo.com/"><strong>dolor</strong></a> sit<br/>amet <<foo>script>alert("hello world");</script>',
++       '<b>Lorem</b> <a title="foo">ipsum</a> <a href="http://foo.com/"><strong>dolor</strong></a> sit<br>amet &lt;script&gt;alert("hello world");'
++    ]
++  ]
++
++  def test_should_sanitize_html_strings
++    STRINGS.each do |input, expected|
++      assert_equal expected, filter(input)
++    end
++  end
++
++  # samples taken from the Sanitize test suite
++  PROTOCOLS = {
++    'protocol-based JS injection: simple, no spaces' => [
++      '<a href="javascript:alert(\'XSS\');">foo</a>',
++      '<a>foo</a>'
++    ],
++
++    'protocol-based JS injection: simple, spaces before' => [
++      '<a href="javascript    :alert(\'XSS\');">foo</a>',
++      '<a>foo</a>'
++    ],
++
++    'protocol-based JS injection: simple, spaces after' => [
++      '<a href="javascript:    alert(\'XSS\');">foo</a>',
++      '<a>foo</a>'
++    ],
++
++    'protocol-based JS injection: simple, spaces before and after' => [
++      '<a href="javascript    :   alert(\'XSS\');">foo</a>',
++      '<a>foo</a>'
++    ],
++
++    'protocol-based JS injection: preceding colon' => [
++      '<a href=":javascript:alert(\'XSS\');">foo</a>',
++      '<a>foo</a>'
++    ],
++
++    'protocol-based JS injection: UTF-8 encoding' => [
++      '<a href="javascript&#58;">foo</a>',
++      '<a>foo</a>'
++    ],
++
++    'protocol-based JS injection: long UTF-8 encoding' => [
++      '<a href="javascript&#0058;">foo</a>',
++      '<a>foo</a>'
++    ],
++
++    'protocol-based JS injection: long UTF-8 encoding without semicolons' => [
++      '<a href=&#0000106&#0000097&#0000118&#0000097&#0000115&#0000099&#0000114&#0000105&#0000112&#0000116&#0000058&#0000097&#0000108&#0000101&#0000114&#0000116&#0000040&#0000039&#0000088&#0000083&#0000083&#0000039&#0000041>foo</a>',
++      '<a>foo</a>'
++    ],
++
++    'protocol-based JS injection: hex encoding' => [
++      '<a href="javascript&#x3A;">foo</a>',
++      '<a>foo</a>'
++    ],
++
++    'protocol-based JS injection: long hex encoding' => [
++      '<a href="javascript&#x003A;">foo</a>',
++      '<a>foo</a>'
++    ],
++
++    'protocol-based JS injection: hex encoding without semicolons' => [
++      '<a href=&#x6A&#x61&#x76&#x61&#x73&#x63&#x72&#x69&#x70&#x74&#x3A&#x61&#x6C&#x65&#x72&#x74&#x28&#x27&#x58&#x53&#x53&#x27&#x29>foo</a>',
++      '<a>foo</a>'
++    ],
++
++    'protocol-based JS injection: null char' => [
++      "<img src=java\0script:alert(\"XSS\")>",
++      '<img src="java">'
++      #'<img>'
++    ],
++
++    'protocol-based JS injection: invalid URL char' => [
++      '<img src=java\script:alert("XSS")>',
++      '<img>'
++    ],
++
++    'protocol-based JS injection: spaces and entities' => [
++      '<img src=" &#14;  javascript:alert(\'XSS\');">',
++      '<img src="">'
++      #'<img>'
++    ],
++
++    'protocol whitespace' => [
++      '<a href=" http://example.com/"></a>',
++      '<a href="http://example.com/"></a>'
++    ],
++
++    'data images sources' => [
++      '<img src="data:image/png;base64,foobar">',
++      '<img>'
++    ],
++
++    'data URIs' => [
++      '<a href="data:text/html;base64,foobar">XSS</a>',
++      '<a>XSS</a>'
++    ],
++
++    'vbscript URIs' => [
++      '<a href="vbscript:foobar">XSS</a>',
++      '<a>XSS</a>'
++    ],
++
++    'invalid URIs' => [
++      '<a href="foo://example.org">link</a>',
++      '<a>link</a>'
++    ],
++  }
++
++  PROTOCOLS.each do |name, strings|
++    test "should not allow #{name}" do
++      input, expected = *strings
++      assert_equal expected, filter(input)
++    end
++  end
++
++end
++end # if Object.const_defined?(:CommonMarker)
++
+diff --git a/test/unit/lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter_test.rb b/test/unit/lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter_test.rb
+new file mode 100644
+index 000000000..2ead13972
+--- /dev/null
++++ b/test/unit/lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter_test.rb
+@@ -0,0 +1,61 @@
++# frozen_string_literal: true
++#
++require File.expand_path('../../../../../../test_helper', __FILE__)
++if Object.const_defined?(:CommonMarker)
++require 'redmine/wiki_formatting/common_mark/syntax_highlight_filter'
++
++class Redmine::WikiFormatting::CommonMark::SyntaxHighlightFilterTest < ActiveSupport::TestCase
++
++  def filter(html)
++    Redmine::WikiFormatting::CommonMark::SyntaxHighlightFilter.to_html(html, @options)
++  end
++
++  def setup
++    @options = { }
++  end
++
++  def test_should_highlight_supported_language
++    input = <<-HTML
++<pre><code class="language-ruby">
++def foo
++end
++</code></pre>
++    HTML
++    expected = <<-HTML
++<pre><code class="ruby syntaxhl">
++<span class="k">def</span> <span class="nf">foo</span>
++<span class="k">end</span>
++</code></pre>
++    HTML
++    assert_equal expected, filter(input)
++  end
++
++  def test_should_strip_code_for_unknown_lang
++    input = <<-HTML
++<pre><code class="language-foobar">
++def foo
++end
++</code></pre>
++    HTML
++    expected = <<-HTML
++<pre>
++def foo
++end
++</pre>
++    HTML
++    assert_equal expected, filter(input)
++  end
++
++  def test_should_ignore_code_without_class
++    input = <<-HTML
++<pre><code>
++def foo
++end
++</code></pre>
++    HTML
++    assert_equal input, filter(input)
++  end
++
++end
++end # if Object.const_defined?(:CommonMarker)
++
+-- 
+2.11.0
+
