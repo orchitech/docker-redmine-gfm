@@ -6,6 +6,10 @@ RUN apt-get update && apt-get install -y \
   make \
   patch
 
+# exec cmd only when the entrypoint is not run from other script to allow running the default
+# entrypoint in custom entrypoint script
+RUN sed -i 's/^\(\s*exec\s.*\)$/\[ "$0" = "$BASH_SOURCE" \] \&\& \1 || :/' /docker-entrypoint.sh
+
 RUN gem install commonmarker -v 0.21.0
 
 COPY patch /tmp/patch
