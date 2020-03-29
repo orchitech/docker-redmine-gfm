@@ -24,4 +24,18 @@ RUN apt-get update && apt-get install -y gcc make patch && \
     rm -rf ~redmine/.bundle; \
     \
     apt-get remove -y gcc make patch && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* \
+    \
+    # reset apt-mark's "manual" list so that "purge --auto-remove" will remove all build dependencies
+    apt-mark auto '.*' > /dev/null; \
+    [ -z "$savedAptMark" ] || apt-mark manual $savedAptMark; \
+    find /usr/local -type f -executable -exec ldd '{}' ';' \
+        | awk '/=>/ { print $(NF-1) }' \
+        | sort -u \
+        | grep -v '^/usr/local/' \
+        | xargs -r dpkg-query --search \
+        | cut -d: -f1 \
+        | sort -u \
+        | xargs -r apt-mark manual \
+        ; \
+    apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false
