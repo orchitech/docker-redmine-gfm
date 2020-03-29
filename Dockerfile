@@ -1,4 +1,4 @@
-ARG REDMINE_IMAGE=redmine:4.1.0
+ARG REDMINE_IMAGE=redmine:latest
 FROM ${REDMINE_IMAGE}
 
 # exec cmd only when the entrypoint is not run from other script to allow running the default
