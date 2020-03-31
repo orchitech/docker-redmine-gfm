@@ -9,7 +9,7 @@ RUN sed -iE 's/^\(\s*\)\(exec\s.*\)/\1if [ "$0" = "$BASH_SOURCE" ]; then \2; fi/
 
 COPY patch /tmp/patch
 
-RUN image_suffix=$(echo $REDMINE_IMAGE | cut -d- -f2); \
+RUN image_suffix=$(echo $REDMINE_IMAGE | cut -d: -f2 | cut -d- -f2); \
     image_type=$(case $image_suffix in alpine|passenger) echo $image_suffix;; *) echo debian;; esac); \
     template=Dockerfile-$image_type.template; \
     wget -qO- https://raw.githubusercontent.com/docker-library/redmine/master/$template | \
