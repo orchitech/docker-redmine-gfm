@@ -10,12 +10,12 @@ RUN sed -iE 's/^\(\s*\)\(exec\s.*\)/\1if [ "$0" = "$BASH_SOURCE" ]; then \2; fi/
 COPY patch /tmp/patch
 COPY extract-install-script.awk /
 
-RUN image_suffix=$(echo $REDMINE_IMAGE | cut -d: -f2 | cut -d- -f2); \
-    image_type=$(case $image_suffix in alpine|passenger) echo $image_suffix;; *) echo debian;; esac); \
+RUN image_suffix=$(echo "$REDMINE_IMAGE" | cut -d: -f2 | cut -d- -f2); \
+    image_type=$([ "$image_suffix" = "alpine" ] && echo alpine || echo debian); \
     template=Dockerfile-$image_type.template; \
     wget -qO- https://raw.githubusercontent.com/docker-library/redmine/master/$template | \
-    /extract-install-script.awk | grep -v '^[[:space:]]*#' | > /install-dependencies.sh; \
+    /extract-install-script.awk | grep -v '^[[:space:]]*#' > /install-dependencies.sh; \
     sed -i 's%rm \(/usr/local/bundle/gems/rbpdf-font.*\); \\$%if \[ -f \1 \]; then rm \1; fi%' /install-dependencies.sh; \
     chmod +x /install-dependencies.sh
 
-RUN if [ ! -f lib/redmine/wiki_formatting/common_mark/formatter.rb ]; then /install-dependencies.sh; fi
+RUN [ -f lib/redmine/wiki_formatting/common_mark/formatter.rb ] || /install-dependencies.sh
