@@ -1,5 +1,8 @@
 language: generic
 
-script:
-  ./build.sh
+services:
+  - docker
 
+script:
+  - echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+  - ./build.sh
