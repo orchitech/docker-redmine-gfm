@@ -14,7 +14,7 @@ BEGIN { cont = 0; cmd = ""; matched = 0; }
 !cont && (NF == 0 || $1 ~ /^#/) { next; }
 $1 ~ /^[^#]/ { cont = 0; }
 /^[ \t]*[^#].*\\[ \t]*$/ { cont = 1; }
-{ cmd = cmd $0 RS; }
+$1 ~ /^[^#]/ { cmd = cmd $0 RS; }
 !cont && length(cmd) > 0 { dockercmd(cmd); cmd = ""; }
 END {
   if (length(cmd) > 0) dockercmd(cmd);
