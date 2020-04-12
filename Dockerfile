@@ -27,5 +27,8 @@ RUN set -eux; \
          apt-get update && apt-get install -y patch; \
        fi; \
        cat /tmp/patch/*.patch | patch -p1; \
+       if grep -q render_file_content app/helpers/attachments_helper.rb; then \
+         patch -p1 patch/0002-attachments_helper-commonmark.patch-4.1.0; \
+       fi; \
        /install-dependencies.sh; \
     fi
