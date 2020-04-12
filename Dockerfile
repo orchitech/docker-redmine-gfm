@@ -31,4 +31,5 @@ RUN set -eux; \
          patch -p1 patch/0002-attachments_helper-commonmark.patch-4.1.0; \
        fi; \
        /install-dependencies.sh; \
-    fi
+    fi; \
+    rm -r /tmp/patch
