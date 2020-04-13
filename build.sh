@@ -22,7 +22,7 @@ max() {
 
 get_supported_versions()
 {
-  local next_page="https://hub.docker.com/v2/repositories/library/redmine/tags"
+  local next_page="https://hub.docker.com/v2/repositories/library/redmine/tags?ordering=last_updated"
   local page
   local versions
 
@@ -32,7 +32,7 @@ get_supported_versions()
     next_page=$(echo "$page" | jq -r '.next')
   done
 
-  echo "$versions" | grep -E "$SUPPORTED_VERSIONS_REGEXP" | sort -Vr
+  echo "$versions" | grep -E "$SUPPORTED_VERSIONS_REGEXP"
 }
 
 rebuild_since=$(date -d "-$REBUILD_PERIOD" -Is)
