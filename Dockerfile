@@ -7,8 +7,8 @@ ARG REDMINE_IMAGE=redmine:latest
 # do not exec CMD should the script be sourced from a custom entrypoint
 RUN sed -i -E 's/^(\s*)(exec\s.*)/\1if [ "$0" = "$BASH_SOURCE" ]; then \2; fi/' /docker-entrypoint.sh
 
-COPY patch /tmp/patch
-COPY extract-install-script.awk /
+COPY patches /tmp/patches
+COPY scripts /scripts
 
 RUN set -eux; \
     image_suffix=$(echo "$REDMINE_IMAGE" | cut -d: -f2 | cut -d- -f2); \
@@ -16,9 +16,9 @@ RUN set -eux; \
     \
     template=Dockerfile-$image_type.template; \
     wget -qO- https://raw.githubusercontent.com/docker-library/redmine/master/$template | \
-    /extract-install-script.awk > /install-dependencies.sh; \
-    sed -i 's%rm \(/usr/local/bundle/gems/rbpdf-font.*\); \\$%if \[ -f \1 \]; then rm \1; fi%' /install-dependencies.sh; \
-    chmod +x /install-dependencies.sh; \
+    /scripts/extract-install-script.awk > /scripts/install-dependencies.sh; \
+    sed -i 's%rm \(/usr/local/bundle/gems/rbpdf-font.*\); \\$%if \[ -f \1 \]; then rm \1; fi%' /scripts/install-dependencies.sh; \
+    chmod +x /scripts/install-dependencies.sh; \
     \
     if [ ! -f lib/redmine/wiki_formatting/common_mark/formatter.rb ]; then \
        if [ "$image_type" = "alpine" ]; then \
@@ -26,10 +26,7 @@ RUN set -eux; \
        else \
          apt-get update && apt-get install -y patch; \
        fi; \
-       cat /tmp/patch/*.patch | patch -p1; \
-       if grep -q render_file_content app/helpers/attachments_helper.rb; then \
-         patch -p1 patch/0002-attachments_helper-commonmark.patch-4.1.0; \
-       fi; \
-       /install-dependencies.sh; \
+       /scripts/apply-patches.sh "$PWD" /tmp/patches "$REDMINE_VERSION"; \
+       /scripts/install-dependencies.sh; \
     fi; \
-    rm -r /tmp/patch
+    rm -r /tmp/patches
