@@ -4,6 +4,7 @@ FROM ${REDMINE_IMAGE}
 # Re-declare ARG after its reset - https://github.com/moby/moby/issues/34129
 ARG REDMINE_IMAGE=redmine:latest
 ARG BUILD_DATE
+ARG SOURCE_IMAGE_ID
 
 LABEL build-date="$BUILD_DATE"
 LABEL source-image-id="$SOURCE_IMAGE_ID"
