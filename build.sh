@@ -42,9 +42,15 @@ gfm_tag_exists()
   curl -f $GFM_IMAGE_BASE_URL/tags/$tag &> /dev/null
 }
 
+get_last_commit_date()
+{
+  last_commit_date_with_tz=$(git log -1 --date=iso-strict --format=%cd)
+  # convert timestamp with timezone to local timestamp
+  date -d "$last_commit_date_with_tz" | date -Is
+}
+
 rebuild_since=$(date -d "-$REBUILD_PERIOD" -Is)
-last_commit_date_local=$(git log -1 --date=iso-strict --format=%cd)
-last_commit_date_utc=$(date -d "$last_commit_date_local" | date -Is)
+last_commit_date=$(get_last_commit_date)
 
 builds=0
 for tag in $(get_supported_versions); do
@@ -60,7 +66,7 @@ for tag in $(get_supported_versions); do
         jq -r '.[] | .Config | .Labels | .["build-date"] // empty')
   fi
 
-  build_since=$(max "$source_image_updated_on" "$rebuild_since" "$last_commit_date_utc")
+  build_since=$(max "$source_image_updated_on" "$rebuild_since" "$last_commit_date")
   if [[ -z "$gfm_image_build_date" || "$gfm_image_build_date" < "$build_since" ]]; then
     docker pull redmine:$tag
     echo "building $GFM_IMAGE_NAME:$tag..."
