@@ -6,6 +6,7 @@ ARG REDMINE_IMAGE=redmine:latest
 ARG BUILD_DATE
 
 LABEL build-date="$BUILD_DATE"
+LABEL source-image-id="$SOURCE_IMAGE_ID"
 
 # do not exec CMD should the script be sourced from a custom entrypoint
 RUN sed -i -E 's/^(\s*)(exec\s.*)/\1if [ "$0" = "$BASH_SOURCE" ]; then \2; fi/' /docker-entrypoint.sh

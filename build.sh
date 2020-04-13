@@ -3,9 +3,11 @@
 set -euo pipefail
 
 SUPPORTED_VERSIONS_REGEXP='^(latest|alpine|passenger|4)'
-REDMINE_GFM_IMAGE=orchitech/redmine-gfm
 MAX_BUILDS_PER_RUN=10
 REBUILD_PERIOD="1 week"
+GFM_IMAGE_NAME=orchitech/redmine-gfm
+GFM_IMAGE_BASE_URL=https://hub.docker.com/v2/repositories/$GFM_IMAGE_NAME
+SOURCE_IMAGE_BASE_URL=https://hub.docker.com/v2/repositories/library/redmine
 
 export TZ=UTC
 
@@ -22,7 +24,7 @@ max() {
 
 get_supported_versions()
 {
-  local next_page="https://hub.docker.com/v2/repositories/library/redmine/tags?ordering=last_updated"
+  local next_page="$SOURCE_IMAGE_BASE_URL/tags?ordering=last_updated"
   local page
   local versions
 
@@ -35,23 +37,38 @@ get_supported_versions()
   echo "$versions" | grep -E "$SUPPORTED_VERSIONS_REGEXP"
 }
 
+gfm_tag_exists()
+{
+  curl -f $GFM_IMAGE_BASE_URL/tags/$tag &> /dev/null
+}
+
 rebuild_since=$(date -d "-$REBUILD_PERIOD" -Is)
 last_commit_date_local=$(git log -1 --date=iso-strict --format=%cd)
 last_commit_date_utc=$(date -d "$last_commit_date_local" | date -Is)
+
 builds=0
 for tag in $(get_supported_versions); do
   if [ $builds -ge $MAX_BUILDS_PER_RUN ]; then
     break
   fi
-  official_image_updated_on=$(curl -sS https://hub.docker.com/v2/repositories/library/redmine/tags/$tag | jq -r '.last_updated')
-  if curl -f https://hub.docker.com/v2/repositories/$REDMINE_GFM_IMAGE/tags/$tag &> /dev/null; then
-    docker pull $REDMINE_GFM_IMAGE:$tag
-    gfm_image_build_date=$(docker inspect $REDMINE_GFM_IMAGE:$tag | jq -r '.[] | .Config | .Labels | .["build-date"] // empty')
+
+  source_image_updated_on=$(curl -sS $SOURCE_IMAGE_BASE_URL/tags/$tag | jq -r '.last_updated')
+
+  if gfm_tag_exists; then
+    docker pull $GFM_IMAGE_NAME:$tag
+    gfm_image_build_date=$(docker inspect $GFM_IMAGE_NAME:$tag | \
+        jq -r '.[] | .Config | .Labels | .["build-date"] // empty')
   fi
-  if [[ -z "$gfm_image_build_date" || "$gfm_image_build_date" < $(max "$official_image_updated_on" "$rebuild_since" "$last_commit_date_utc") ]]; then
-    echo "building $REDMINE_GFM_IMAGE:$tag..."
-    docker build -t $REDMINE_GFM_IMAGE:$tag --build-arg REDMINE_IMAGE=redmine:$tag --build-arg BUILD_DATE="$(date -Is)" .
-    docker push $REDMINE_GFM_IMAGE:$tag
+
+  build_since=$(max "$source_image_updated_on" "$rebuild_since" "$last_commit_date_utc")
+  if [[ -z "$gfm_image_build_date" || "$gfm_image_build_date" < "$build_since" ]]; then
+    docker pull redmine:$tag
+    echo "building $GFM_IMAGE_NAME:$tag..."
+    docker build -t $GFM_IMAGE_NAME:$tag \
+        --build-arg REDMINE_IMAGE=redmine:$tag \
+        --build-arg BUILD_DATE="$(date -Is)" \
+        --build-arg SOURCE_IMAGE_ID="$(docker inspect redmine:$tag | jq -r '.[] | .Id')" .
+    docker push $GFM_IMAGE_NAME:$tag
     builds=$((builds + 1))
   fi
 done
