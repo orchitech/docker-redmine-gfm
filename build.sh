@@ -3,7 +3,7 @@
 set -euo pipefail
 
 SUPPORTED_VERSIONS_REGEXP='^(latest|alpine|passenger|4)'
-MAX_BUILDS_PER_RUN=10
+MAX_BUILDS_PER_RUN=25
 REBUILD_PERIOD="1 week"
 GFM_IMAGE_NAME=orchitech/redmine-gfm
 GFM_IMAGE_BASE_URL=https://hub.docker.com/v2/repositories/$GFM_IMAGE_NAME
