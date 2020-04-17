@@ -1,5 +1,14 @@
 # Redmine image with `common_mark` format patch
 
+## Supported tags
+
+- `4.1.1`, `4.1`, `4`, `latest`
+- `4.1.1-passenger`, `4.1-passenger`, `4-passenger`, `passenger`
+- `4.1.1-alpine`, `4.1-alpine`, `4-alpine`, `alpine`
+- `4.0.7`, `4.0`
+- `4.0.7-passenger`, `4.0-passenger`
+- `4.0.7-alpine`, `4.0-alpine`
+
 This project contains a simple Dockerfile based on
 [the official Redmine image](https://hub.docker.com/_/redmine) and `common_mark` format patches.
 The `common_mark` patches will be a part of the official Redmine (and its Docker images) since version 4.2.0.
