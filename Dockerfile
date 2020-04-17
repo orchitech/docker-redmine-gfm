@@ -3,11 +3,14 @@ FROM ${REDMINE_IMAGE}
 
 # Re-declare ARG after its reset - https://github.com/moby/moby/issues/34129
 ARG REDMINE_IMAGE=redmine:latest
+
 ARG BUILD_DATE
-ARG SOURCE_IMAGE_ID
+ARG FROM_IMAGE_DIGEST
+ARG REDMINE_GFM_VERSION
 
 LABEL build-date="$BUILD_DATE"
-LABEL source-image-id="$SOURCE_IMAGE_ID"
+LABEL from-image-digest="$FROM_IMAGE_DIGEST"
+LABEL redmine-gfm-version="$REDMINE_GFM_VERSION"
 
 # do not exec CMD should the script be sourced from a custom entrypoint
 RUN sed -i -E 's/^(\s*)(exec\s.*)/\1if [ "$0" = "$BASH_SOURCE" ]; then \2; fi/' /docker-entrypoint.sh

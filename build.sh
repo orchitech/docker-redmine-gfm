@@ -2,14 +2,11 @@
 
 set -euo pipefail
 
-SUPPORTED_VERSIONS_REGEXP='^(latest|alpine|passenger|4)'
-MAX_BUILDS_PER_RUN=25
 REBUILD_PERIOD="1 week"
 GFM_IMAGE_NAME=orchitech/redmine-gfm
-GFM_IMAGE_BASE_URL=https://hub.docker.com/v2/repositories/$GFM_IMAGE_NAME
-SOURCE_IMAGE_BASE_URL=https://hub.docker.com/v2/repositories/library/redmine
 
 export TZ=UTC
+source .version
 
 _datecmd=date
 command -v gdate >/dev/null 2>&1 && _datecmd=gdate
@@ -18,63 +15,74 @@ date()
   command "$_datecmd" "$@"
 }
 
-max() {
-  printf "%s\n" "$@" | sort -r | head -n1
+_grepcmd=grep
+command -v ggrep >/dev/null 2>&1 && _grepcmd=ggrep
+grep()
+{
+  command "$_grepcmd" "$@"
 }
 
-get_supported_versions()
+fail()
 {
-  local next_page="$SOURCE_IMAGE_BASE_URL/tags?ordering=last_updated"
-  local page
-  local versions
-
-  while [ "$next_page" != 'null' ]; do
-    page=$(curl -sS "$next_page")
-    versions+=$(echo "$page" | jq -r '.results[] | .name')$'\n'
-    next_page=$(echo "$page" | jq -r '.next')
-  done
-
-  echo "$versions" | grep -E "$SUPPORTED_VERSIONS_REGEXP"
+  echo "$1" >&2
+  exit 1
 }
 
 gfm_tag_exists()
 {
-  curl -f $GFM_IMAGE_BASE_URL/tags/$tag &> /dev/null
+  curl -f "https://hub.docker.com/v2/repositories/$GFM_IMAGE_NAME/tags/$TAG" &> /dev/null
 }
 
-get_last_commit_date()
+get_gfm_label()
 {
-  last_commit_date_with_tz=$(git log -1 --date=iso-strict --format=%cd)
-  # convert timestamp with timezone to local timestamp
-  date -d "$last_commit_date_with_tz" | date -Is
+  local label=$1
+  docker inspect "$GFM_IMAGE_NAME:$TAG" | jq -r ".[] | .Config | .Labels | .[\"$label\"] // empty"
 }
 
-rebuild_since=$(date -d "-$REBUILD_PERIOD" -Is)
-last_commit_date=$(get_last_commit_date)
+get_gfm_last_updated()
+{
+  date -d $(curl -sS "https://hub.docker.com/v2/repositories/$GFM_IMAGE_NAME/tags/$TAG" | jq -r ".last_updated") --utc +%FT%TZ
+}
 
-builds=0
-for tag in $(get_supported_versions); do
-  if [ $builds -ge $MAX_BUILDS_PER_RUN ]; then
-    break
-  fi
-
-  source_image_updated_on=$(curl -sS $SOURCE_IMAGE_BASE_URL/tags/$tag | jq -r '.last_updated')
-
+need_rebuild()
+{
   if gfm_tag_exists; then
-    docker pull $GFM_IMAGE_NAME:$tag
-    gfm_image_build_date=$(docker inspect $GFM_IMAGE_NAME:$tag | \
-        jq -r '.[] | .Config | .Labels | .["build-date"] // empty')
-  fi
+    docker pull "$GFM_IMAGE_NAME:$TAG"
 
-  build_since=$(max "$source_image_updated_on" "$rebuild_since" "$last_commit_date")
-  if [[ -z "$gfm_image_build_date" || "$gfm_image_build_date" < "$build_since" ]]; then
-    docker pull redmine:$tag
-    echo "building $GFM_IMAGE_NAME:$tag..."
-    docker build -t $GFM_IMAGE_NAME:$tag \
-        --build-arg REDMINE_IMAGE=redmine:$tag \
-        --build-arg BUILD_DATE="$(date -Is)" \
-        --build-arg SOURCE_IMAGE_ID="$(docker inspect redmine:$tag | jq -r '.[] | .Id')" .
-    docker push $GFM_IMAGE_NAME:$tag
-    builds=$((builds + 1))
+    local gfm_image_from_digest=$(get_gfm_label "from-image-digest")
+    if [ "$gfm_image_from_digest" != "$FROM_IMAGE_DIGEST" ]; then
+      echo "The current $GFM_IMAGE_NAME $TAG tag's from image digest $gfm_image_from_digest does not match the source image digest $from_image_digest." >&2
+      return 0
+    fi
+    local gfm_image_version=$(get_gfm_label "redmine-gfm-version")
+    if [ "$gfm_image_version" != "$VERSION" ]; then
+      echo "The current $GFM_IMAGE_NAME $TAG tag's version $gfm_image_version does not match the current version $VERSION." >&2
+      return 0
+    fi
+    local rebuild_since=$(date -d "-$REBUILD_PERIOD" --utc +%FT%TZ)
+    if [[ "$(get_gfm_last_updated)" < "$rebuild_since" ]]; then
+      echo "The current $GFM_IMAGE_NAME:$TAG is too old." >&2
+    fi
+    return 1
+  else
+    echo "Redmine GFM image with tag $TAG does not exist" >&2
+    return 0
   fi
-done
+}
+
+if [ -z "${TAG-}" ]; then
+  fail "TAG environment variable must be set."
+fi
+if [ -z "${FROM_IMAGE_DIGEST-}" ]; then
+  fail "FROM_IMAGE_DIGEST environment variable must be set."
+fi
+
+if need_rebuild; then
+  echo "building $GFM_IMAGE_NAME:$TAG..." >&2
+  docker pull "redmine@$FROM_IMAGE_DIGEST"
+  docker build -t "$GFM_IMAGE_NAME:$TAG" \
+      --build-arg REDMINE_IMAGE="redmine:$TAG" \
+      --build-arg FROM_IMAGE_DIGEST="$FROM_IMAGE_DIGEST" \
+      --build-arg REDMINE_GFM_VERSION="$VERSION" .
+  docker push "$GFM_IMAGE_NAME:$TAG"
+fi
