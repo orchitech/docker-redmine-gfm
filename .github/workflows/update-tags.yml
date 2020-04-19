@@ -1,0 +1,22 @@
+name: update-tags
+
+on:
+  schedule:
+    - cron:  '0 * * * *'
+
+jobs:
+  update-tags:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Update tags.yml
+      run: ./update_tags.sh
+    - name: Commit tags.yml
+      run: |
+        git config --local user.email "webmaster+orchicd@orchitech.cz"
+        git config --local user.name "Orchi CD Bot"
+        if [ -n "$(git status -s)" ]; then
+          git add tags.yml
+          git commit -m "Update tags"
+          git push
+        fi
