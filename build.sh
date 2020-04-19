@@ -51,7 +51,7 @@ need_rebuild()
 
     local gfm_image_from_digest=$(get_gfm_label "from-image-digest")
     if [ "$gfm_image_from_digest" != "$FROM_IMAGE_DIGEST" ]; then
-      echo "The current $GFM_IMAGE_NAME $TAG tag's from image digest $gfm_image_from_digest does not match the source image digest $gfm_image_from_digest." >&2
+      echo "The current $GFM_IMAGE_NAME $TAG tag's from image digest $gfm_image_from_digest does not match the source image digest $FROM_IMAGE_DIGEST." >&2
       return 0
     fi
     local gfm_image_version=$(get_gfm_label "redmine-gfm-version")

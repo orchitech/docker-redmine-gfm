@@ -1,5 +1,7 @@
 language: generic
 
+version: ~> 1.0
+
 services:
   - docker
 

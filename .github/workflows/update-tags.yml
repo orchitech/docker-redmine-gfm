@@ -2,7 +2,7 @@ name: update-tags
 
 on:
   schedule:
-    - cron:  '19 * * * *'
+    - cron:  '41 * * * *'
 
 jobs:
   update-tags:
