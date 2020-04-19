@@ -16,9 +16,9 @@ jobs:
       run: ./update_tags.sh
     - name: Commit tags.yml
       run: |
-        git config --local user.email "webmaster+orchicd@orchitech.cz"
-        git config --local user.name "Orchi CD Bot"
         if [ -n "$(git status -s)" ]; then
+          git config --local user.email "webmaster+orchicd@orchitech.cz"
+          git config --local user.name "Orchi CD Bot"
           git add tags.yml
           git commit -m "Update tags"
           git push

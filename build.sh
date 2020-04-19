@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -euo pipefail
+set -eux -o pipefail
 
 REBUILD_PERIOD="1 week"
 GFM_IMAGE_NAME=orchitech/redmine-gfm
@@ -47,7 +47,7 @@ get_gfm_last_updated()
 need_rebuild()
 {
   if gfm_tag_exists; then
-    docker pull "$GFM_IMAGE_NAME:$TAG"
+    docker pull -q "$GFM_IMAGE_NAME:$TAG"
 
     local gfm_image_from_digest=$(get_gfm_label "from-image-digest")
     if [ "$gfm_image_from_digest" != "$FROM_IMAGE_DIGEST" ]; then
@@ -79,10 +79,16 @@ fi
 
 if need_rebuild; then
   echo "building $GFM_IMAGE_NAME:$TAG..." >&2
-  docker pull "redmine@$FROM_IMAGE_DIGEST"
+  image_suffix="${TAG##*-}"
+  case "$image_suffix" in
+    alpine)
+      linux_distribution=alpine ;;
+    *)
+      linux_distribution=debian ;;
+  esac
   docker build -t "$GFM_IMAGE_NAME:$TAG" \
-      --build-arg REDMINE_IMAGE="redmine:$TAG" \
       --build-arg FROM_IMAGE_DIGEST="$FROM_IMAGE_DIGEST" \
+      --build-arg LINUX_DISTRIBUTION="$linux_distribution" \
       --build-arg REDMINE_GFM_VERSION="$VERSION" .
   docker push "$GFM_IMAGE_NAME:$TAG"
 fi

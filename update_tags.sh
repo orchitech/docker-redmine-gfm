@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -euo pipefail
+set -eux -o pipefail
 
 SUPPORTED_VERSIONS_REGEXP='^(latest|alpine|passenger|4)'
 
