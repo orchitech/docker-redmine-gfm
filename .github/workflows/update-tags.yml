@@ -2,11 +2,14 @@ name: update-tags
 
 on:
   schedule:
-    - cron:  '0 * * * *'
+    - cron:  '19 * * * *'
 
 jobs:
   update-tags:
     runs-on: ubuntu-latest
+    env:
+      DOCKER_HUB_USERNAME: "${{ secrets.DOCKER_HUB_USERNAME }}"
+      DOCKER_HUB_PASSWORD: "${{ secrets.DOCKER_HUB_PASSWORD }}"
     steps:
     - uses: actions/checkout@v2
     - name: Update tags.yml
