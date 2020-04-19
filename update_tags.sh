@@ -50,5 +50,5 @@ fi
 
 echo "env:" > tags.yml
 for tag in $(get_supported_tags); do
-  echo "TAG=$tag FROM_IMAGE_DIGEST=$(get_image_digest $tag)" >> tags.yml
+  echo "  - TAG=$tag FROM_IMAGE_DIGEST=$(get_image_digest $tag)" >> tags.yml
 done
