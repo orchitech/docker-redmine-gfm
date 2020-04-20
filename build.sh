@@ -13,11 +13,11 @@ get_gfm_labels()
 {
   local tag=$1
   local token=$(get_docker_hub_token $GFM_IMAGE_NAME)
-  local config_digest=$(curl -sS "$DOCKER_HUB_REGISTRY_URL/v2/$GFM_IMAGE_NAME/manifests/$tag" \
+  local config_digest=$(curl -fsS "$DOCKER_HUB_REGISTRY_URL/v2/$GFM_IMAGE_NAME/manifests/$tag" \
       -H "Authorization:Bearer $token" \
       -H "Accept: application/vnd.docker.distribution.manifest.v2+json" | \
       jq -r .config.digest)
-  curl -sS -L --max-redirs 3 "$DOCKER_HUB_REGISTRY_URL/v2/$GFM_IMAGE_NAME/blobs/$config_digest" \
+  curl -fsS -L --max-redirs 3 "$DOCKER_HUB_REGISTRY_URL/v2/$GFM_IMAGE_NAME/blobs/$config_digest" \
       -H "Authorization:Bearer $token" | \
       jq -r .container_config.Labels
 }
@@ -29,7 +29,7 @@ gfm_tag_exists()
 
 get_gfm_last_updated()
 {
-  date -d $(curl -sS "https://hub.docker.com/v2/repositories/$GFM_IMAGE_NAME/tags/$TAG" | jq -r ".last_updated") --utc +%FT%TZ
+  date -d $(curl -fsS "https://hub.docker.com/v2/repositories/$GFM_IMAGE_NAME/tags/$TAG" | jq -r ".last_updated") --utc +%FT%TZ
 }
 
 need_rebuild()

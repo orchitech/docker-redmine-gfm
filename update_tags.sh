@@ -13,7 +13,7 @@ SUPPORTED_VERSIONS_REGEXP='^(latest|alpine|passenger|4)'
 get_image_digest()
 {
   local tag=$1
-  curl -sS "$DOCKER_HUB_REGISTRY_URL/v2/library/redmine/manifests/$tag" \
+  curl -fsS "$DOCKER_HUB_REGISTRY_URL/v2/library/redmine/manifests/$tag" \
       -H "Authorization:Bearer $(get_docker_hub_token library/redmine)" \
       -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" | \
       jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest'
@@ -27,7 +27,7 @@ get_tags()
   local versions
 
   while [ "$next_page" != 'null' ]; do
-    page=$(curl -sS "$next_page")
+    page=$(curl -fsS "$next_page")
     versions+=$(echo "$page" | jq -r '.results[] | . as $result | .images[] | select(.os == "linux" and .architecture == "amd64") | $result.name')$'\n'
 
     next_page=$(echo "$page" | jq -r '.next')
