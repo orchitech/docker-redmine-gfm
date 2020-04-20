@@ -53,7 +53,7 @@ sort_tags()
 print_tags()
 {
   local tags=$1
-  sort_tags "$tags" | sed -E 's/[^ ]+/`&`/g' | sed 's/ /, /g' | tr '\n' ' ' | sed 's/ $//'
+  sort_tags "$tags" | sed -E 's/[^ ]+/`&`/g' | tr '\n' ' ' | sed 's/ $//' | sed 's/ /, /g'
 }
 
 print_readme()

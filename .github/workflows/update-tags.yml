@@ -14,12 +14,12 @@ jobs:
     - uses: actions/checkout@v2
     - name: Update tags.yml and README.md
       run: ./update_tags.sh
-    - name: Commit tags.yml
+    - name: Commit
       run: |
         if [ -n "$(git status -s)" ]; then
           git config --local user.email "webmaster+orchicd@orchitech.cz"
           git config --local user.name "Orchi CD Bot"
-          git add tags.yml
+          git add tags.yml README.md
           git commit -m "Update tags"
           git push
         fi
