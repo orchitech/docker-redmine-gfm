@@ -12,7 +12,7 @@ jobs:
       DOCKER_HUB_PASSWORD: "${{ secrets.DOCKER_HUB_PASSWORD }}"
     steps:
     - uses: actions/checkout@v2
-    - name: Update tags.yml
+    - name: Update tags.yml and README.md
       run: ./update_tags.sh
     - name: Commit tags.yml
       run: |
