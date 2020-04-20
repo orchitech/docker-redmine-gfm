@@ -8,4 +8,4 @@ services:
 import: tags.yml
 
 script:
-  - docker login -u "$DOCKER_USERNAME" --password-stdin <<< "$DOCKER_PASSWORD" && ./build.sh
+  - docker login -u "$DOCKER_HUB_USERNAME" --password-stdin <<< "$DOCKER_HUB_PASSWORD" && ./build.sh

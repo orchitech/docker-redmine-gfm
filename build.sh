@@ -1,42 +1,30 @@
 #!/bin/bash
 
-set -eux -o pipefail
+set -eu -o pipefail
+
+cd "$(dirname "$0")"
+source "./common.sh"
 
 REBUILD_PERIOD="1 week"
-GFM_IMAGE_NAME=orchitech/redmine-gfm
 
-export TZ=UTC
 source .version
 
-_datecmd=date
-command -v gdate >/dev/null 2>&1 && _datecmd=gdate
-date()
+get_gfm_labels()
 {
-  command "$_datecmd" "$@"
-}
-
-_grepcmd=grep
-command -v ggrep >/dev/null 2>&1 && _grepcmd=ggrep
-grep()
-{
-  command "$_grepcmd" "$@"
-}
-
-fail()
-{
-  echo "$1" >&2
-  exit 1
+  local tag=$1
+  local token=$(get_docker_hub_token $GFM_IMAGE_NAME)
+  local config_digest=$(curl -sS "$DOCKER_HUB_REGISTRY_URL/v2/$GFM_IMAGE_NAME/manifests/$tag" \
+      -H "Authorization:Bearer $token" \
+      -H "Accept: application/vnd.docker.distribution.manifest.v2+json" | \
+      jq -r .config.digest)
+  curl -sS -L --max-redirs 3 "$DOCKER_HUB_REGISTRY_URL/v2/$GFM_IMAGE_NAME/blobs/$config_digest" \
+      -H "Authorization:Bearer $token" | \
+      jq -r .container_config.Labels
 }
 
 gfm_tag_exists()
 {
   curl -f "https://hub.docker.com/v2/repositories/$GFM_IMAGE_NAME/tags/$TAG" &> /dev/null
-}
-
-get_gfm_label()
-{
-  local label=$1
-  docker inspect "$GFM_IMAGE_NAME:$TAG" | jq -r ".[] | .Config | .Labels | .[\"$label\"] // empty"
 }
 
 get_gfm_last_updated()
@@ -47,14 +35,13 @@ get_gfm_last_updated()
 need_rebuild()
 {
   if gfm_tag_exists; then
-    docker pull -q "$GFM_IMAGE_NAME:$TAG"
-
-    local gfm_image_from_digest=$(get_gfm_label "from-image-digest")
+    local gfm_image_labels=$(get_gfm_labels "$TAG")
+    local gfm_image_from_digest=$(jq -r '.["from-image-digest"]' <<< "$gfm_image_labels")
     if [ "$gfm_image_from_digest" != "$FROM_IMAGE_DIGEST" ]; then
       echo "The current $GFM_IMAGE_NAME $TAG tag's from image digest $gfm_image_from_digest does not match the source image digest $FROM_IMAGE_DIGEST." >&2
       return 0
     fi
-    local gfm_image_version=$(get_gfm_label "redmine-gfm-version")
+    local gfm_image_version=$(jq -r '.["redmine-gfm-version"]' <<< "$gfm_image_labels")
     if [ "$gfm_image_version" != "$VERSION" ]; then
       echo "The current $GFM_IMAGE_NAME $TAG tag's version $gfm_image_version does not match the current version $VERSION." >&2
       return 0
@@ -79,9 +66,8 @@ fi
 
 if need_rebuild; then
   echo "building $GFM_IMAGE_NAME:$TAG..." >&2
-  image_suffix="${TAG##*-}"
-  case "$image_suffix" in
-    alpine)
+  case "$TAG" in
+    alpine|*-alpine|*-alpine-*)
       linux_distribution=alpine ;;
     *)
       linux_distribution=debian ;;
