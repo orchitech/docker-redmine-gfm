@@ -1,5 +1,7 @@
 # Redmine image with `common_mark` format patch
 
+[![Build Status](https://travis-ci.com/orchitech/docker-redmine-gfm.svg?branch=master)](https://travis-ci.com/orchitech/docker-redmine-gfm)
+
 ## Supported tags
 
 - `4.1.1`, `4.1`, `4`, `latest`
