@@ -1,0 +1,5 @@
+#!/bin/bash
+
+set -eu -o pipefail
+
+echo "Images are built in Travis CI pipeline. Docker automated builds are used only for updating description from README." >&2

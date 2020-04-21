@@ -13,7 +13,7 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Update tags.yml and README.md
-      run: ./update_tags.sh
+      run: ./update.sh
     - name: Commit
       run: |
         if [ -n "$(git status -s)" ]; then
