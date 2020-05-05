@@ -49,6 +49,7 @@ need_rebuild()
     local rebuild_since=$(date -d "-$REBUILD_PERIOD" --utc +%FT%TZ)
     if [[ "$(get_gfm_last_updated)" < "$rebuild_since" ]]; then
       echo "The current $GFM_IMAGE_NAME:$TAG is too old." >&2
+      return 0
     fi
     return 1
   else
