@@ -12,9 +12,9 @@ WARNING:
 
 # Supported tags
 
-- `latest`, `4`, `4.1`, `4.0`, `4.1.1`, `4.1.0`, `4.0.7`, `4.0.6`, `4.0.5`, `4.0.4`, `4.0.3`, `4.0.2`, `4.0.1`, `4.0.0`
-- `alpine`, `4-alpine`, `4.1-alpine`, `4.0-alpine`, `4.1.1-alpine`, `4.1.0-alpine`, `4.0.7-alpine`, `4.0.6-alpine`, `4.0.5-alpine`, `4.0.4-alpine`
-- `passenger`, `4-passenger`, `4.1-passenger`, `4.0-passenger`, `4.1.1-passenger`, `4.1.0-passenger`, `4.0.7-passenger`, `4.0.6-passenger`, `4.0.5-passenger`, `4.0.4-passenger`, `4.0.3-passenger`, `4.0.2-passenger`, `4.0.1-passenger`, `4.0.0-passenger`
+- `latest`, `4`, `4.1`, `4.1.1`, `4.1.0`
+- `alpine`, `4-alpine`, `4.1-alpine`, `4.1.1-alpine`, `4.1.0-alpine`
+- `passenger`, `4-passenger`, `4.1-passenger`, `4.1.1-passenger`, `4.1.0-passenger`
 
 # Redmine image with `common_mark` format patch
 
