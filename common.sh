@@ -1,9 +1,7 @@
-#!/bin/bash
-
 set -eu -o pipefail
 
 export TZ=UTC
-DOCKER_HUB_REGISTRY_URL="https://registry-1.docker.io"
+DOCKER_HUB_REGISTRY_URL=https://registry-1.docker.io
 GFM_IMAGE_NAME=orchitech/redmine-gfm
 
 fail()
