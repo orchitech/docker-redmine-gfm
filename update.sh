@@ -5,8 +5,7 @@ set -eu -o pipefail
 cd "$(dirname "$0")"
 source "./common.sh"
 
-
-VERSION_PATTERN='(4|4\.[0-9.]*)'
+VERSION_PATTERN='(4|4\.[1-9][0-9.]*)'
 VARIANT_PATTERN='(alpine|passenger)'
 MD_BULLET='-'
 
