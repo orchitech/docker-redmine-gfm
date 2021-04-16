@@ -1,0 +1,28 @@
+#!/bin/bash
+
+set -eu -o pipefail
+
+total=0
+failures=0
+declare -a results=()
+
+while IFS= read -r line; do
+  e=${line#'  - '}
+  [ "$e" != "$line" ] || continue
+  echo "Building: $e" >&2
+  if env $e ./build.sh; then
+    results+=("[PASSED] $e")
+  else
+    results+=("[FAILED] $e")
+    let failures+=1
+  fi
+  let total+=1
+  echo >&2
+done < tags.yml
+
+echo "Build summary:" >&2
+printf '%s\n' "${results[@]}" >&2
+echo >&2
+echo "${total} builds, ${failures} failures" >&2
+
+[ "$failures" -eq 0 ] || exit 1
