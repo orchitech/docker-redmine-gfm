@@ -1,0 +1,163 @@
+diff --git a/lib/redmine/helpers/url.rb b/lib/redmine/helpers/url.rb
+index 0c6cbdecd..6b87fdc55 100644
+--- a/lib/redmine/helpers/url.rb
++++ b/lib/redmine/helpers/url.rb
+@@ -22,6 +22,7 @@ require 'uri'
+ module Redmine
+   module Helpers
+     module URL
++      # safe for resources fetched without user interaction?
+       def uri_with_safe_scheme?(uri, schemes = ['http', 'https', 'ftp', 'mailto', nil])
+         # URLs relative to the current document or document root (without a protocol
+         # separator, should be harmless
+@@ -32,6 +33,16 @@ module Redmine
+       rescue URI::Error
+         false
+       end
++
++      # safe to render links to given uri?
++      def uri_with_link_safe_scheme?(uri)
++        # regexp adapted from Sanitize (we need to catch even invalid protocol specs)
++        return true unless uri =~ /\A\s*([^\/#]*?)(?:\:|&#0*58|&#x0*3a)/i
++        # absolute scheme
++        scheme = $1.downcase
++        return false unless scheme =~ /\A[a-z][a-z0-9\+\.\-]*\z/ # RFC 3986
++        %w(data javascript vbscript).none?(scheme)
++      end
+     end
+   end
+ end
+diff --git a/lib/redmine/wiki_formatting/common_mark/sanitization_filter.rb b/lib/redmine/wiki_formatting/common_mark/sanitization_filter.rb
+index b2125981b..3426e176b 100644
+--- a/lib/redmine/wiki_formatting/common_mark/sanitization_filter.rb
++++ b/lib/redmine/wiki_formatting/common_mark/sanitization_filter.rb
+@@ -24,6 +24,12 @@ module Redmine
+ 
+       # sanitizes rendered HTML using the Sanitize gem
+       class SanitizationFilter < HTML::Pipeline::SanitizationFilter
++        include Redmine::Helpers::URL
++
++        RELAXED_PROTOCOL_ATTRS = {
++          "a" => %w(href).freeze,
++        }.freeze
++
+         def whitelist
+           @@whitelist ||= customize_whitelist(super.deep_dup)
+         end
+@@ -72,11 +78,21 @@ module Redmine
+             node.remove_attribute("id")
+           }
+ 
+-          # allw the same set of URL schemes for links as is the default in
+-          # Redmine::Helpers::URL#uri_with_safe_scheme?
+-          whitelist[:protocols][:a] = [
+-            'http', 'https', 'ftp', 'mailto', :relative
+-          ]
++          # https://github.com/rgrove/sanitize/issues/209
++          whitelist[:protocols].delete("a")
++          whitelist[:transformers].push lambda{|env|
++            node = env[:node]
++            return if node.type != Nokogiri::XML::Node::ELEMENT_NODE
++            name = env[:node_name]
++            return unless RELAXED_PROTOCOL_ATTRS.include?(name)
++            RELAXED_PROTOCOL_ATTRS[name].each do |attr|
++              next unless node.has_attribute?(attr)
++              node[attr] = node[attr].strip
++              unless !node[attr].empty? && uri_with_link_safe_scheme?(node[attr])
++                node.remove_attribute(attr)
++              end
++            end
++          }
+ 
+           whitelist
+         end
+diff --git a/test/unit/lib/redmine/helpers/url_test.rb b/test/unit/lib/redmine/helpers/url_test.rb
+index 013a7ecac..d49239a9b 100644
+--- a/test/unit/lib/redmine/helpers/url_test.rb
++++ b/test/unit/lib/redmine/helpers/url_test.rb
+@@ -33,4 +33,43 @@ class URLTest < ActiveSupport::TestCase
+     assert_not uri_with_safe_scheme?("httpx://example.com/")
+     assert_not uri_with_safe_scheme?("mailto:root@")
+   end
++
++  LINK_SAFE_URIS = [
++    "http://example.com/",
++    "https://example.com/",
++    "ftp://example.com/",
++    "foo://example.org",
++    "mailto:foo@example.org",
++    " http://example.com/",
++    "",
++    "/javascript:alert(\'filename\')",
++  ]
++  def test_uri_with_link_safe_scheme_should_recognize_safe_uris
++    LINK_SAFE_URIS.each do |uri|
++      assert uri_with_link_safe_scheme?(uri), "'#{uri}' should be safe"
++    end
++  end
++
++  LINK_UNSAFE_URIS = [
++    "javascript:alert(\'XSS\');",
++    "javascript    :alert(\'XSS\');",
++    "javascript:    alert(\'XSS\');",
++    "javascript    :   alert(\'XSS\');",
++    ":javascript:alert(\'XSS\');",
++    "javascript&#58;",
++    "javascript&#0058;",
++    "javascript&#x3A;",
++    "javascript&#x003A;",
++    "java\0script:alert(\"XSS\")",
++    "java\script:alert(\"XSS\")",
++    " \x0e  javascript:alert(\'XSS\');",
++    "data:image/png;base64,foobar",
++    "vbscript:foobar",
++    "data:text/html;base64,foobar",
++  ]
++  def test_uri_with_link_safe_scheme_should_recognize_unsafe_uris
++    LINK_UNSAFE_URIS.each do |uri|
++      assert_not uri_with_link_safe_scheme?(uri), "'#{uri}' should not be safe"
++    end
++  end
+ end
+diff --git a/test/unit/lib/redmine/wiki_formatting/common_mark/sanitization_filter_test.rb b/test/unit/lib/redmine/wiki_formatting/common_mark/sanitization_filter_test.rb
+index d2471eb72..3b86094c6 100644
+--- a/test/unit/lib/redmine/wiki_formatting/common_mark/sanitization_filter_test.rb
++++ b/test/unit/lib/redmine/wiki_formatting/common_mark/sanitization_filter_test.rb
+@@ -54,6 +54,25 @@ class Redmine::WikiFormatting::CommonMark::SanitizationFilterTest < ActiveSuppor
+     assert_equal %(<code>foo</code>), filter(input)
+   end
+ 
++  def test_should_allow_links_with_safe_url_schemes
++    %w(http https ftp ssh foo).each do |scheme|
++      input = %(<a href="#{scheme}://example.org/">foo</a>)
++      assert_equal input, filter(input)
++    end
++  end
++
++  def test_should_allow_mailto_links
++    input = %(<a href="mailto:foo@example.org">bar</a>)
++    assert_equal input, filter(input)
++  end
++
++  def test_should_remove_empty_link
++    input = %(<a href="">bar</a>)
++    assert_equal %(<a>bar</a>), filter(input)
++
++    input = %(<a href=" ">bar</a>)
++    assert_equal %(<a>bar</a>), filter(input)
++  end
+ 
+   # samples taken from the Sanitize test suite
+   STRINGS = [
+@@ -174,11 +193,6 @@ class Redmine::WikiFormatting::CommonMark::SanitizationFilterTest < ActiveSuppor
+       '<a href="vbscript:foobar">XSS</a>',
+       '<a>XSS</a>'
+     ],
+-
+-    'invalid URIs' => [
+-      '<a href="foo://example.org">link</a>',
+-      '<a>link</a>'
+-    ],
+   }
+ 
+   PROTOCOLS.each do |name, strings|

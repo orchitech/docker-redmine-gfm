@@ -1,0 +1,191 @@
+diff --git a/lib/redmine/wiki_formatting/common_mark/sanitization_filter.rb b/lib/redmine/wiki_formatting/common_mark/sanitization_filter.rb
+index 98a049070..b2125981b 100644
+--- a/lib/redmine/wiki_formatting/common_mark/sanitization_filter.rb
++++ b/lib/redmine/wiki_formatting/common_mark/sanitization_filter.rb
+@@ -44,7 +44,7 @@ module Redmine
+             node = env[:node]
+             return unless node.name == "code"
+             return unless node.has_attribute?("class")
+-            unless node["class"] =~ /\Alanguage-(\w+)\z/
++            unless node["class"] =~ /\Alanguage-(\S+)\z/
+               node.remove_attribute("class")
+             end
+           }
+diff --git a/lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter.rb b/lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter.rb
+index 3f46f466b..1f8d8b86f 100644
+--- a/lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter.rb
++++ b/lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter.rb
+@@ -28,19 +28,21 @@ module Redmine
+         def call
+           doc.search("pre > code").each do |node|
+             next unless lang = node["class"].presence
+-            next unless lang =~ /\Alanguage-(\w+)\z/
++            next unless lang =~ /\Alanguage-(\S+)\z/
+ 
+             lang = $1
+             text = node.inner_text
+ 
++            # original language for extension development
++            node["data-language"] = lang unless node["data-language"]
++
+             if Redmine::SyntaxHighlighting.language_supported?(lang)
+               html = Redmine::SyntaxHighlighting.highlight_by_language(text, lang)
+               next if html.nil?
+               node.inner_html = html
+               node["class"] = "#{lang} syntaxhl"
+             else
+-              # unsupported language, strip out the code tag
+-              node.parent.inner_html = text
++              node.remove_attribute("class")
+             end
+           end
+           doc
+diff --git a/test/unit/lib/redmine/wiki_formatting/common_mark/formatter_test.rb b/test/unit/lib/redmine/wiki_formatting/common_mark/formatter_test.rb
+index 6ef7f9d14..70896c1da 100644
+--- a/test/unit/lib/redmine/wiki_formatting/common_mark/formatter_test.rb
++++ b/test/unit/lib/redmine/wiki_formatting/common_mark/formatter_test.rb
+@@ -94,24 +94,34 @@ class Redmine::WikiFormatting::CommonMark::FormatterTest < ActionView::TestCase
+   end
+ 
+   def test_should_support_syntax_highlight
+-    text = <<-STR
+-~~~ruby
+-def foo
+-end
+-~~~
+-STR
++    text = <<~STR
++      ~~~ruby
++      def foo
++      end
++      ~~~
++    STR
+     assert_select_in format(text), 'pre code.ruby.syntaxhl' do
+       assert_select 'span.k', :text => 'def'
++      assert_select "[data-language='ruby']"
+     end
+   end
+ 
+   def test_should_not_allow_invalid_language_for_code_blocks
+-    text = <<-STR
+-~~~foo
+-test
+-~~~
+-STR
+-    assert_equal "<pre>test\n</pre>", format(text)
++    text = <<~STR
++      ~~~foo
++      test
++      ~~~
++    STR
++    assert_equal "<pre><code data-language=\"foo\">test\n</code></pre>", format(text)
++  end
++
++  def test_should_preserve_code_block_language_in_data_language
++    text = <<~STR
++      ~~~c-k&r
++      test
++      ~~~
++    STR
++    assert_equal "<pre><code data-language=\"c-k&amp;r\">test\n</code></pre>", format(text)
+   end
+ 
+   def test_external_links_should_have_external_css_class
+@@ -125,29 +135,29 @@ STR
+   end
+ 
+   def test_markdown_should_not_require_surrounded_empty_line
+-    text = <<-STR
+-This is a list:
+-* One
+-* Two
+-STR
++    text = <<~STR
++      This is a list:
++      * One
++      * Two
++    STR
+     assert_equal "<p>This is a list:</p>\n<ul>\n<li>One</li>\n<li>Two</li>\n</ul>", format(text)
+   end
+ 
+   def test_footnotes
+-    text = <<-STR
+-This is some text[^1].
+-
+-[^1]: This is the foot note
+-STR
+-
+-    expected = <<-EXPECTED
+-<p>This is some text<sup><a href="#fn1" id="fnref1">1</a></sup>.</p>
+- <ol>
+-<li id="fn1">
+-<p>This is the foot note <a href="#fnref1">↩</a></p>
+-</li>
+-</ol> 
+-EXPECTED
++    text = <<~STR
++      This is some text[^1].
++
++      [^1]: This is the foot note
++    STR
++
++    expected = <<~EXPECTED
++      <p>This is some text<sup><a href="#fn1" id="fnref1">1</a></sup>.</p>
++       <ol>
++      <li id="fn1">
++      <p>This is the foot note <a href="#fnref1">↩</a></p>
++      </li>
++      </ol> 
++    EXPECTED
+ 
+     assert_equal expected.gsub(%r{[\r\n\t]}, ''), format(text).gsub(%r{[\r\n\t]}, '')
+   end
+diff --git a/test/unit/lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter_test.rb b/test/unit/lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter_test.rb
+index 2ead13972..45cd79e17 100644
+--- a/test/unit/lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter_test.rb
++++ b/test/unit/lib/redmine/wiki_formatting/common_mark/syntax_highlight_filter_test.rb
+@@ -22,7 +22,7 @@ end
+ </code></pre>
+     HTML
+     expected = <<-HTML
+-<pre><code class="ruby syntaxhl">
++<pre><code class="ruby syntaxhl" data-language="ruby">
+ <span class="k">def</span> <span class="nf">foo</span>
+ <span class="k">end</span>
+ </code></pre>
+@@ -30,7 +30,7 @@ end
+     assert_equal expected, filter(input)
+   end
+ 
+-  def test_should_strip_code_for_unknown_lang
++  def test_should_strip_code_class_for_unknown_lang
+     input = <<-HTML
+ <pre><code class="language-foobar">
+ def foo
+@@ -38,10 +38,24 @@ end
+ </code></pre>
+     HTML
+     expected = <<-HTML
+-<pre>
++<pre><code data-language="foobar">
+ def foo
+ end
+-</pre>
++</code></pre>
++    HTML
++    assert_equal expected, filter(input)
++  end
++
++  def test_should_preserve_lang_in_data_language_attribute
++    input = <<-HTML
++<pre><code class="language-c-k&amp;r">
++int i;
++</code></pre>
++    HTML
++    expected = <<-HTML
++<pre><code data-language="c-k&amp;r">
++int i;
++</code></pre>
+     HTML
+     assert_equal expected, filter(input)
+   end
