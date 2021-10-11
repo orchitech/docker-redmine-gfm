@@ -12,9 +12,9 @@ WARNING:
 
 # Supported tags
 
-- `latest`, `4`, `4.2`, `4.2.2`, `4.2.1`, `4.2.0`
-- `alpine`, `4-alpine`, `4.2-alpine`, `4.2.2-alpine`, `4.2.1-alpine`, `4.2.0-alpine`
-- `passenger`, `4-passenger`, `4.2-passenger`, `4.2.2-passenger`, `4.2.1-passenger`, `4.2.0-passenger`
+- `latest`, `4`, `4.2`, `4.2.3`, `4.2.2`, `4.2.1`, `4.2.0`
+- `alpine`, `4-alpine`, `4.2-alpine`, `4.2.3-alpine`, `4.2.2-alpine`, `4.2.1-alpine`, `4.2.0-alpine`
+- `passenger`, `4-passenger`, `4.2-passenger`, `4.2.3-passenger`, `4.2.2-passenger`, `4.2.1-passenger`, `4.2.0-passenger`
 
 # Redmine image with CommonMark formating
 
