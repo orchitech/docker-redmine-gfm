@@ -10,6 +10,10 @@ WARNING:
 
 -->
 
+# Redmine 5 Update
+
+CommonMark Markdown (GFM) has been integrated in Redmine 5. The mission of this repository has been accomplished and it is not maintained anymore.
+
 # Supported tags
 
 - `latest`, `4`, `4.2`, `4.2.9`, `4.2.8`, `4.2.7`, `4.2.6`, `4.2.5`, `4.2.4`, `4.2.3`, `4.2.2`, `4.2.1`, `4.2.0`
