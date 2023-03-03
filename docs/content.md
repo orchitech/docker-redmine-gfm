@@ -1,3 +1,7 @@
+# Redmine 5 Update
+
+CommonMark Markdown (GFM) has been integrated in Redmine 5. The mission of this repository has been accomplished and it is not maintained anymore.
+
 # Redmine image with CommonMark formating
 
 [![Build Status](https://travis-ci.com/orchitech/docker-redmine-gfm.svg?branch=master)](https://travis-ci.com/orchitech/docker-redmine-gfm)
